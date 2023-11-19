@@ -14,101 +14,6 @@
     //                 0.89%  12.330ms         2  6.1648ms  1.9446ms  10.385ms  cudaMemcpy
     //                 0.63%  8.7707ms         1  8.7707ms  8.7707ms  8.7707ms  cuDeviceGetPCIBusId
 
-
-/*  -- OLD VERSION --
- * Compute the cosine distance between two vectors
- * inspired from Cuda webinar on reduction kernel03 (mabye extend optimization to kernel04)
-*/
-__global__ void gpu_get_components(const float * ref,
-                                int           ref_nb,
-                                const float * query,
-                                int           query_nb,
-                                int           dim,
-                                int           ref_index,
-                                int           query_index,
-                                float       * d_odot,
-                                float       * d_odenom_a,
-                                float       * d_odenom_b,
-                                float       * d_gpu_dist){
-    
-    extern __shared__ float smem[];
-
-    // each thread loads one element from global to shared mem (but in this case we need product of corresponding dimension)
-    unsigned int tid = threadIdx.x;
-    unsigned int i = (blockIdx.x * blockDim.x) + threadIdx.x;
-
-    // dot product
-    smem[tid]                = (ref[(i*ref_nb)+ref_index]) * (query[(i*query_nb)+query_index]);
-    // denom_a
-    smem[tid+blockDim.x]     = (ref[(i*ref_nb)+ref_index]) * (ref[(i*ref_nb)+ref_index]);
-    // denom_b
-    smem[tid+(2*blockDim.x)] = (query[(i*query_nb)+query_index]) * (query[(i*query_nb)+query_index]);
-
-    __syncthreads();
-
-    for(unsigned int s=blockDim.x/2; s>0; s>>=1){
-        if(tid < s){
-            smem[tid] += smem[tid + s];
-            smem[tid+blockDim.x] += smem[tid + s + blockDim.x];
-            smem[tid+(2*blockDim.x)] += smem[tid + s + (2*blockDim.x)];
-        }
-        __syncthreads();
-    }
-   
-    // write result for this block to global memory
-    // THIS PART IS NOT NECESSARY IF WORKING WITH ONLY ONE BLOCK
-    // if (tid == 0){
-    //     d_odot[blockIdx.x]    = smem[0];
-    //     d_odenom_a[blockIdx.x] = smem[blockDim.x];
-    //     d_odenom_b[blockIdx.x] = smem[2*blockDim.x];
-    // } 
-
-    if (tid == 0){
-        d_gpu_dist[(query_nb*ref_index)+query_index] = smem[0] / (sqrt(smem[blockDim.x]) * sqrt(smem[2*blockDim.x]));
-    }
-
-}
-
-// -- OLD VERSION --
-// get idot,idenom_a and idenom_b. Respectively sum them up, and then calculate final result which will be written into gpu_dist
-// THIS FUNCTION IS NOT NECESSARY IF WORKING WITH ONLY ONE BLOCK
-__global__ void gpu_cosine_distance(int     ref_nb,
-                                    int     query_nb,
-                                    int     ref_index,
-                                    int     query_index,
-                                    float * d_idot,
-                                    float * d_idenom_a,
-                                    float * d_idenom_b,
-                                    float * d_gpu_dist){
-
-    extern __shared__ float smem[];
-
-    unsigned int tid = threadIdx.x;
-    unsigned int i = (blockIdx.x * blockDim.x) + threadIdx.x;
-
-    smem[tid] = d_idot[i];
-    smem[tid+blockDim.x] = d_idenom_a[i];
-    smem[tid+(2*blockDim.x)] = d_idenom_b[i];
-
-    __syncthreads();
-
-    for(unsigned int s=blockDim.x/2; s>0; s>>=1){
-        if(tid < s){
-            smem[tid] += smem[tid + s];
-            smem[tid+blockDim.x] += smem[tid + s + blockDim.x];
-            smem[tid+(2*blockDim.x)] += smem[tid + s + (2*blockDim.x)];
-        }
-        __syncthreads();
-    }
-
-    // write cosine distance result in global memory
-    if (tid == 0){
-        d_gpu_dist[(query_nb*ref_index)+query_index] = smem[0] / (sqrt(smem[blockDim.x]) * sqrt(smem[2*blockDim.x]));
-    }
-
-}
-
-
 // -- NEW VERSION --
 /*
     * Compute the cosine distance between two vectors
@@ -314,23 +219,17 @@ int main(void) {
 
     // copy ref and query into cuda mem
     float *d_ref, *d_query;
-    // float *d_odot, *d_odenom_a, *d_odenom_b;                                             // OLD VERSION
     float *d_gpu_dist;
 
 
     cudaMalloc(&d_ref, ref_nb * dim * sizeof(float));
     cudaMalloc(&d_query, ref_nb * dim * sizeof(float));
 
-    // cudaMalloc(&d_odot, gridSize * sizeof(float));                                       // OLD VERSION                                
-    // cudaMalloc(&d_odenom_a, gridSize * sizeof(float));                                   // OLD VERSION              
-    // cudaMalloc(&d_odenom_b, gridSize * sizeof(float));                                   // OLD VERSION
-
     cudaMalloc(&d_gpu_dist, o_matrix_size);
 
     // printf("Copying data from host to device\n");
     cudaMemcpy(  d_ref,   ref, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_query, query, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
-    // printf("Done\n\n");
 
     // start timer
     struct timeval  tv1, tv2;
@@ -407,10 +306,4 @@ int main(void) {
     cudaFree(d_ref);
     cudaFree(d_query);
     cudaFree(d_gpu_dist);
-
-    // cudaFree(d_odot);
-    // cudaFree(d_odenom_a);
-    // cudaFree(d_odenom_b);
-    
-
 }
