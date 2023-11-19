@@ -5,13 +5,20 @@
 #include <sys/time.h>
 #include <time.h>
 #include <assert.h>
+#include <inttypes.h>
+
+// 2023-03-07 16:00:00 NVPROF
+    //         Type  Time(%)      Time     Calls       Avg       Min       Max  Name
+    //   API calls:   95.81%  1.33104s         3  443.68ms  538.90us  1.32840s  cudaMalloc
+    //                 2.67%  37.120ms      1070  34.691us  4.7000us  1.5229ms  cudaLaunchKernel
+    //                 0.89%  12.330ms         2  6.1648ms  1.9446ms  10.385ms  cudaMemcpy
+    //                 0.63%  8.7707ms         1  8.7707ms  8.7707ms  8.7707ms  cuDeviceGetPCIBusId
 
 
-/*
+/*  -- OLD VERSION --
  * Compute the cosine distance between two vectors
  * inspired from Cuda webinar on reduction kernel03 (mabye extend optimization to kernel04)
 */
-
 __global__ void gpu_get_components(const float * ref,
                                 int           ref_nb,
                                 const float * query,
@@ -62,6 +69,7 @@ __global__ void gpu_get_components(const float * ref,
 
 }
 
+// -- OLD VERSION --
 // get idot,idenom_a and idenom_b. Respectively sum them up, and then calculate final result which will be written into gpu_dist
 // THIS FUNCTION IS NOT NECESSARY IF WORKING WITH ONLY ONE BLOCK
 __global__ void gpu_cosine_distance(int     ref_nb,
@@ -100,6 +108,13 @@ __global__ void gpu_cosine_distance(int     ref_nb,
 
 }
 
+
+// -- NEW VERSION --
+/*
+    * Compute the cosine distance between two vectors
+    * inspired from Cuda webinar on reduction kernel03 (mabye extend optimization to kernel04)
+    * In this version, each block computes a single cosine distance between a variable ref point vs a query point, each block has "dim" threads
+*/
 __global__ void cdist(const float * ref,
                         int           ref_nb,
                         const float * query,
@@ -111,7 +126,7 @@ __global__ void cdist(const float * ref,
     // we need 3 * blockDim * sizeof(float) shared memory
     extern __shared__ float smem[];
 
-    unsigned int i = (blockIdx.x * blockDim.x) + threadIdx.x;
+    // unsigned int i = (blockIdx.x * blockDim.x) + threadIdx.x;
     unsigned int tid = threadIdx.x;
 
     // printf("i: %d\n", i);
@@ -190,8 +205,6 @@ float cosine_distance(const float * ref,
 
 
 int main(void) {
-
-    
     
     // Parameters 0 (to develop your solution)
     // const int ref_nb   = 4096;
@@ -200,18 +213,18 @@ int main(void) {
     // const int k        = 16;
 
     // Parameters 1
-    const int ref_nb   = 16384;
-    const int query_nb = 4096;
-    const int dim      = 128;
-    const int k        = 100;
-
-    // Parameters 2
-    // const int ref_nb   = 163840;
-    // const int query_nb = 40960;
+    // const int ref_nb   = 16384;
+    // const int query_nb = 4096;
     // const int dim      = 128;
-    // const int k        = 16;
+    // const int k        = 100;
 
-    // Parameters 3
+    // Parameters 2     (not working: too many query & ref points)
+    const int ref_nb   = 163840;
+    const int query_nb = 40960;
+    const int dim      = 128;
+    const int k        = 16;
+
+    // Parameters 3     (not working: too many dimensions)
     // const int ref_nb   = 16384;
     // const int query_nb = 4096;
     // const int dim      = 1280;
@@ -246,8 +259,10 @@ int main(void) {
     float * ref        = (float*) malloc(ref_nb   * dim * sizeof(float));
     float * query      = (float*) malloc(query_nb * dim * sizeof(float));
 
-    float * cpu_dist   = (float*) malloc(ref_nb * query_nb * sizeof(float));
-    float * h_gpu_dist   = (float*) malloc(ref_nb * query_nb * sizeof(float));
+    uint64_t o_matrix_size = 1LL * ref_nb * query_nb * sizeof(float);
+
+    float * cpu_dist   = (float*) malloc(o_matrix_size);
+    float * h_gpu_dist   = (float*) malloc(o_matrix_size);
 
     // Allocation checks
     if (!ref || !query || !cpu_dist || !h_gpu_dist) {
@@ -299,18 +314,18 @@ int main(void) {
 
     // copy ref and query into cuda mem
     float *d_ref, *d_query;
-    float *d_odot, *d_odenom_a, *d_odenom_b;
+    // float *d_odot, *d_odenom_a, *d_odenom_b;                                             // OLD VERSION
     float *d_gpu_dist;
 
 
     cudaMalloc(&d_ref, ref_nb * dim * sizeof(float));
     cudaMalloc(&d_query, ref_nb * dim * sizeof(float));
 
-    cudaMalloc(&d_odot, gridSize * sizeof(float));
-    cudaMalloc(&d_odenom_a, gridSize * sizeof(float));
-    cudaMalloc(&d_odenom_b, gridSize * sizeof(float));
+    // cudaMalloc(&d_odot, gridSize * sizeof(float));                                       // OLD VERSION                                
+    // cudaMalloc(&d_odenom_a, gridSize * sizeof(float));                                   // OLD VERSION              
+    // cudaMalloc(&d_odenom_b, gridSize * sizeof(float));                                   // OLD VERSION
 
-    cudaMalloc(&d_gpu_dist, ref_nb * query_nb * sizeof(float));
+    cudaMalloc(&d_gpu_dist, o_matrix_size);
 
     // printf("Copying data from host to device\n");
     cudaMemcpy(  d_ref,   ref, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
@@ -360,7 +375,7 @@ int main(void) {
 
     //mem copy back to cpu
     // expensive
-    cudaMemcpy(h_gpu_dist, d_gpu_dist, ref_nb * query_nb * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_gpu_dist, d_gpu_dist, o_matrix_size, cudaMemcpyDeviceToHost);
 
     // print results
             // for(int i=0; i<ref_nb; ++i) {
@@ -384,16 +399,18 @@ int main(void) {
     }
 
     printf("Number of errors: %d\n", error);
-    printf("Percentage of errors: %f\n", (float) error / (ref_nb * query_nb) * 100);
+    printf("Percentage of errors: %f\n", (float) error / (1LL * ref_nb * query_nb) * 100);
 
 
 
     // free cuda mem
     cudaFree(d_ref);
     cudaFree(d_query);
-    cudaFree(d_odot);
-    cudaFree(d_odenom_a);
-    cudaFree(d_odenom_b);
     cudaFree(d_gpu_dist);
+
+    // cudaFree(d_odot);
+    // cudaFree(d_odenom_a);
+    // cudaFree(d_odenom_b);
+    
 
 }
