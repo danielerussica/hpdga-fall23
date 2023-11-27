@@ -7,12 +7,13 @@
 #include <assert.h>
 #include <inttypes.h>
 
-// 2023-03-07 16:00:00 NVPROF
-    //         Type  Time(%)      Time     Calls       Avg       Min       Max  Name
-    //   API calls:   95.81%  1.33104s         3  443.68ms  538.90us  1.32840s  cudaMalloc
-    //                 2.67%  37.120ms      1070  34.691us  4.7000us  1.5229ms  cudaLaunchKernel
-    //                 0.89%  12.330ms         2  6.1648ms  1.9446ms  10.385ms  cudaMemcpy
-    //                 0.63%  8.7707ms         1  8.7707ms  8.7707ms  8.7707ms  cuDeviceGetPCIBusId
+// TODO:
+//      2. Implement add delta to min and check how many candidates are in the range
+//      3. Implement candidate sorting (mabye do it on cpu? list should be small)
+
+//      4. Explore other k selection methods
+
+
 
 // -- OLD VERSION --
 /*
@@ -135,10 +136,12 @@ __global__ void padded_cdist(const float   * ref,
     // unsigned int i = (blockIdx.x * blockDim.x) + threadIdx.x;
     unsigned int tid = threadIdx.x;
 
+    // initialize smem, if tid < dim, copy data, else copy 0
     smem[tid] = (tid < dim) ? ((ref[(tid*ref_nb)+blockIdx.x]) * (query[(tid*query_nb)+query_index])) : 0;
     smem[tid+paddedDim] = (tid < dim) ? ((ref[(tid*ref_nb)+blockIdx.x]) * (ref[(tid*ref_nb)+blockIdx.x])) : 0;
     smem[tid+(2*paddedDim)] = (tid < dim) ? ((query[(tid*query_nb)+query_index]) * (query[(tid*query_nb)+query_index])) : 0;
 
+    // perform first reduction step when copying data
     if (tid + blockDim.x < dim){
         smem[tid] += ((ref[((tid+blockDim.x)*ref_nb)+blockIdx.x]) * (query[((tid+blockDim.x)*query_nb)+query_index]));
         smem[tid+paddedDim] += ((ref[((tid+blockDim.x)*ref_nb)+blockIdx.x]) * (ref[((tid+blockDim.x)*ref_nb)+blockIdx.x]));
@@ -163,12 +166,8 @@ __global__ void padded_cdist(const float   * ref,
 }
 
 
-// naive get nearest neighbors
-// repeat k times:
-//      find minimum at position pos
-//      add that pos to knn array
-//      set that position to infinity
-
+// get min, add delta check how many candidates are in the range
+// TODO: do first reduction step when copying data
 __global__ void get_min_intrablock(const float* gpu_dist,
                                     int          query_index,
                                     int          query_nb,
@@ -179,18 +178,7 @@ __global__ void get_min_intrablock(const float* gpu_dist,
     extern __shared__ float smem[];
     
     // copy distances and indexes to shared mem
-    smem[threadIdx.x] = gpu_dist[(query_nb*blockIdx.x)+threadIdx.x];
-
-
-
-    if(smem[threadIdx.x] == 0){
-        printf("d smem[%d]: %f\n", threadIdx.x, smem[threadIdx.x]);
-        printf("d gpu_dist[%d]: %f\n", (query_nb*blockIdx.x)+threadIdx.x, gpu_dist[(query_nb*blockIdx.x)+threadIdx.x]);
-    }
-
-
-
-    // printf("smem[%d]: %f\n", threadIdx.x, smem[threadIdx.x]);
+    smem[threadIdx.x] = gpu_dist[(query_nb*blockDim.x*blockIdx.x)+(threadIdx.x*query_nb)+query_index];
 
     __syncthreads();
 
@@ -207,13 +195,21 @@ __global__ void get_min_intrablock(const float* gpu_dist,
     // write result for this block to global memory
     if (threadIdx.x == 0){
         // printf("min: %f\n", smem[0]);
-        min_candidates[(query_nb*blockIdx.x)+query_index] = smem[0];
+        min_candidates[blockIdx.x] = smem[0];
+
+        // // print min candidates
+        // printf("Block %d\n", blockIdx.x);
+        // for(unsigned int i=0; i<blockDim.x; i++){
+        //     printf("%f ||", min_candidates[(query_nb*blockIdx.x)+i]);
+        // }
+        // printf("\n");
     }
 
 }
 
 
 __global__ void get_min_interblock(const float* min_candidates,
+                                    int         query_nb,
                                     float      * min_dist){
 
     // set up shared mem
@@ -236,10 +232,29 @@ __global__ void get_min_interblock(const float* min_candidates,
 
     // write result for this block to global memory
     if (threadIdx.x == 0){
-        *min_dist = smem[0];
+        min_dist[query_nb] = smem[0];
     }
-
 }
+
+// count candidates in range [min, min+delta]
+// every thread in the block adds 1 in smem then we sum all vals into global like in "histogram"
+__global__ void get_candidates(const float* gpu_dist,
+                                const float* min_dist,
+                                int          query_index,
+                                int          query_nb,
+                                float        delta,
+                                int        * candidates){
+    
+    // set up shared mem
+    // sizeof(int) for #candidates in the block
+    extern __shared__ int smem;
+
+    if(gpu_dist[(query_nb*blockDim.x*blockIdx.x)+(threadIdx.x*query_nb)+query_index] <= min_dist[query_nb] + delta){
+        smem++;
+    }
+                                
+}
+
 
 // Initialize data randomly
 void initialize_data(float * ref,
@@ -297,13 +312,33 @@ void print_matrix(float * matrix, int rows, int cols){
     }
 }
 
+void check_results(float * cpu_dist, float * gpu_dist, int ref_nb, int query_nb, int verbose=0){
+    int error = 0;
+    for(int i=0; i<ref_nb; ++i) {
+        
+        for(int j=0; j<query_nb; ++j) {
+            if(fabs(gpu_dist[i*query_nb+j] - cpu_dist[i*query_nb+j]) > 0.001){
+                if(verbose){
+                    printf("Error at index %d, %d\n", i, j);
+                    printf("CPU: %f || ", cpu_dist[i*query_nb+j]);
+                    printf("GPU: %f\n", gpu_dist[i*query_nb+j]);
+                }
+                error++;
+            }
+        }
+    }
+
+    printf("Number of errors: %d\n", error);
+    printf("Percentage of errors: %f\n", (float) error / (1LL * ref_nb * query_nb) * 100);
+}
+
 
 int main(void) {
     
     // Parameters 0 (to develop your solution)
     const int ref_nb   = 4096;
     const int query_nb = 1024;
-    const int dim      = 1280;
+    const int dim      = 64;
     const int k        = 16;
 
     // Parameters 1
@@ -312,13 +347,13 @@ int main(void) {
     // const int dim      = 128;
     // const int k        = 100;
 
-    // Parameters 2     (not working: too many query & ref points)
+    // Parameters 2     (not working: too many query & ref points) (splitting in 10 parts make every param a power of 2)
     // const int ref_nb   = 163840;
     // const int query_nb = 40960;
     // const int dim      = 128;
     // const int k        = 16;
 
-    // Parameters 3     (not working: too many dimensions)
+    // Parameters 3     
     // const int ref_nb   = 16384;
     // const int query_nb = 4096;
     // const int dim      = 1280;
@@ -330,11 +365,6 @@ int main(void) {
     // const int dim      = 1280;
     // const int k        = 4;
 
-
-    int blockSize = dim;        // Number of threads per block (this approach cannot handle more than 1024 threads) (last case scenario)
-    int gridSize = ref_nb;      // Number of blocks
-    
-
     // Display
     printf("PARAMETERS\n");
     printf("- Number reference points : %d\n",   ref_nb);
@@ -342,12 +372,12 @@ int main(void) {
     printf("- Dimension of points     : %d\n",   dim);
     printf("- Number of neighbors     : %d\n\n", k);
 
-
     // Sanity check
     if (ref_nb<k) {
         printf("Error: k value is larger that the number of reference points\n");
         return EXIT_FAILURE;
     }
+
 
     // Allocate input points and output k-NN distances / indexes
     float * ref        = (float*) malloc(ref_nb   * dim * sizeof(float));
@@ -378,6 +408,8 @@ int main(void) {
     // Initialize reference and query points with random values
     initialize_data(ref, ref_nb, query, query_nb, dim);
 
+    // COSINE DISTANCE COMPUTATION CPU ----------------------------------------------------------------------------------------------------------------------
+
     printf("Performing cosine distance computation on CPU\n");
 
     // start timer
@@ -401,8 +433,13 @@ int main(void) {
 
     // print results
     // print_matrix(cpu_dist, ref_nb, query_nb);
+
+    // COSINE DISTANCE COMPUTATION GPU ----------------------------------------------------------------------------------------------------------------------
     
     printf("Performing cosine distance computation on GPU\n");
+
+    int blockSize = dim;        // Number of threads per block (this approach cannot handle more than 1024 threads) (last case scenario)
+    int gridSize = ref_nb;      // Number of blocks
 
     printf("blockSize: %d\n", blockSize);
     printf("gridSize: %d\n", gridSize);
@@ -410,9 +447,6 @@ int main(void) {
     // copy ref and query into cuda mem
     float *d_ref, *d_query;
     float *d_gpu_dist;
-
-    float *d_min_distances;                                                 // min dist for each block
-    float *d_min_dist;                                                      // min dist for each query point
 
     cudaMalloc(&d_ref, ref_nb * dim * sizeof(float));
     cudaMalloc(&d_query, ref_nb * dim * sizeof(float));
@@ -422,8 +456,6 @@ int main(void) {
 
     cudaMemcpy(  d_ref,   ref, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_query, query, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
-
-    
 
 
     // start timer 
@@ -441,7 +473,6 @@ int main(void) {
     int smemSize = 3 * paddedDim * sizeof(float);
     printf("paddedDim: %d\n", paddedDim);
 
-    // test cd2
     for(unsigned int query_index=0; query_index<query_nb; query_index++){
         // printf("Query %d\n", query_index);
         padded_cdist<<< gridSize, paddedDim, smemSize >>>(d_ref, ref_nb, d_query, query_nb, dim, paddedDim, query_index, d_gpu_dist);
@@ -459,83 +490,93 @@ int main(void) {
     //mem copy back to cpu
     cudaMemcpy(h_gpu_dist, d_gpu_dist, o_matrix_size, cudaMemcpyDeviceToHost);
 
-
     // check results
-    int error = 0;
-    int flag = 0;
-    for(int i=0; i<ref_nb; ++i) {
-        
-        for(int j=0; j<query_nb; ++j) {
-            if(fabs(h_gpu_dist[i*query_nb+j] - cpu_dist[i*query_nb+j]) > 0.001){
-                // if (1){
-                //     printf("Error at index (%d, %d)\n", i, j);
-                //     printf("CPU: %f || GPU: %f\n", cpu_dist[i*query_nb+j], h_gpu_dist[i*query_nb+j]);
-                // }
+    check_results(cpu_dist, h_gpu_dist, ref_nb, query_nb);
 
-                flag = 1;
-                
-                error++;
+
+    // -------------- PART 2: k selection ------------------------------------------------------------------------------------------------------------------------------
+
+    int blockSize2 = 64;        // Test to find the best value theoretically we want second level to use at least 32 blocks to avoid inactive threads in block
+    int gridSize2 = ref_nb/blockSize2;
+
+    // allocate cuda mem
+    float *d_min_distances;
+    float *d_min_dist;
+
+    cudaMalloc(&d_min_distances, query_nb * gridSize2 * sizeof(float));
+    cudaMalloc(&d_min_dist, query_nb * sizeof(float));
+
+    float *gpu_min_dist;
+    float *gpu_min_distances;           // it exists for debug purposes
+
+    gpu_min_distances = (float*) malloc(query_nb * gridSize2 * sizeof(float));
+    gpu_min_dist = (float*) malloc(query_nb * sizeof(float));
+    
+
+    printf("\n\nSearching for min\n");
+    printf("blockSize: %d\n", blockSize2);
+    printf("gridSize: %d\n", gridSize2);
+    // select k nearest neighbors
+    for(unsigned int query_index=0; query_index<query_nb; query_index++){
+        get_min_intrablock<<< gridSize2, blockSize2, blockSize2 * sizeof(float) >>>(d_gpu_dist, query_index, query_nb, d_min_distances);
+        get_min_interblock<<< 1, gridSize2, gridSize2 * sizeof(float) >>>(d_min_distances, query_index, d_min_dist);
+    }
+
+    //mem copy back to cpu
+    cudaMemcpy(gpu_min_dist, d_min_dist, query_nb * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(gpu_min_distances, d_min_distances, query_nb * gridSize2 * sizeof(float), cudaMemcpyDeviceToHost);
+
+    // printf("Min distances:\n");
+    // for(unsigned int i=0; i<query_nb; i++){
+    //     printf("%f ||", gpu_min_dist[i]);
+    // }
+
+
+    // calculate min on cpu ----------------------------------------------------------------------------------------------------------------------
+    float * cpu_min_dist = (float*) malloc(query_nb * sizeof(float));
+
+    for(unsigned int query_index=0; query_index<query_nb; query_index++){
+        float min = 1;
+        for(unsigned int ref_index=0; ref_index<ref_nb; ref_index++){
+            if(cpu_dist[(query_nb*ref_index)+query_index] < min){
+                min = cpu_dist[(query_nb*ref_index)+query_index];
             }
+        }
+        // printf("Min: %f\n", min);
+        cpu_min_dist[query_index] = min;
+    }
+
+    // check results ------------------------------------------------------------------------------------------------------------------------------
+
+    int minfinder_error = 0;
+
+    for(unsigned int i=0; i<query_nb; i++){
+        if(fabs(gpu_min_dist[i] - cpu_min_dist[i]) > 0.001){
+            printf("Error at index %d\n", i);
+            printf("CPU: %f || ", cpu_min_dist[i]);
+            printf("GPU: %f\n", gpu_min_dist[i]);
+
+            minfinder_error++;
         }
     }
 
-     // print results
-    // for(int i=0; i<ref_nb; ++i) {
-    //     for(int j=0; j<query_nb; ++j) {
-    //         printf("%f ||",fabs(h_gpu_dist[i*query_nb+j] - cpu_dist[i*query_nb+j]));
-    //         // printf("%f ||", h_gpu_dist[i*query_nb+j]);
-    //     }
-    //     printf("\n");
-    // }
+    printf("Number of errors: %d\n", minfinder_error);
+    printf("Percentage of errors: %f\n", (float) minfinder_error / (1LL * query_nb) * 100);
 
 
-    printf("Number of errors: %d\n", error);
-    printf("Percentage of errors: %f\n", (float) error / (1LL * ref_nb * query_nb) * 100);
+    // -------------- PART 3: add delta and count candidates -------------------------------------------------------------------------------------
 
-    
-
-
-    // -------------- PART 2: k selection -------------------------------------------------------------------------------------------------------------------------------------------------------
-
-    // int blockSize2 = 1024;        // Test to find the best value
-    // int gridSize2 = ref_nb/blockSize;
-
-    // cudaMalloc(&d_min_distances, query_nb * gridSize2 * sizeof(float));
-    // cudaMalloc(&d_min_dist, query_nb * sizeof(float));
-
-    // float *min_dist;
-    // float *min_distances;
-
-    // min_distances = (float*) malloc(query_nb * gridSize2 * sizeof(float));
-    
-
-    // printf("\n\nSearching for min\n");
-    // printf("blockSize: %d\n", blockSize2);
-    // printf("gridSize: %d\n", gridSize2);
-    // // select k nearest neighbors
-    // for(unsigned int query_index=0; query_index<query_nb; query_index++){
-    //     if(query_index == 1){
-    //         get_min_intrablock<<< gridSize2, blockSize2, blockSize2 * sizeof(float) >>>(d_gpu_dist, query_index, query_nb, d_min_distances);
-    //         printf("intra block min done\n");
-
-    //         // copy min_distances to cpu
-    //         cudaMemcpy(min_distances, d_min_distances, query_nb * gridSize2 * sizeof(float), cudaMemcpyDeviceToHost);
-            
-    //         for(unsigned int i=0; i<gridSize2; i++){
-    //             printf("%f ||", min_distances[i]);
-    //         }
-
-    //         get_min_interblock<<< 1, gridSize2>>>(d_min_distances, d_min_dist);
-
-    //         // copy min_dist to cpu
-    //         cudaMemcpy(min_dist, d_min_dist, sizeof(float), cudaMemcpyDeviceToHost);
-    //         printf("min_dist: %f\n", *min_dist);
-    //     }
-    // }
+    // add delta
+    float M = 0.72;         // value selected analyzing the distribution of the min distances
+    float delta = 0.1;
 
 
-    // free cuda mem
+
+
+    // free cuda mem ------------------------------------------------------------------------------------------------------------------------------
     cudaFree(d_ref);
     cudaFree(d_query);
     cudaFree(d_gpu_dist);
+    cudaFree(d_min_distances);
+    cudaFree(d_min_dist);
 }
