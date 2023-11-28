@@ -15,6 +15,7 @@
 
 
 
+
 // -- OLD VERSION --
 /*
     * Compute the cosine distance between two vectors
@@ -117,9 +118,9 @@ __global__ void cdist2(const float   * ref,
 /*
     * Compute the cosine distance between two vectors
     * inspired from Cuda webinar on reduction kernel04
-    * Half the number of threads per block
+    * Half the number of threads per block compared to previous version
     * Use padding to handle non Po2 dimensions
-    * This version can handle more than 1280 dimensions
+    * This version can handle more than 1280 dimensions (max 2048)
 */
 __global__ void padded_cdist(const float   * ref,
                         int           ref_nb,
@@ -128,7 +129,8 @@ __global__ void padded_cdist(const float   * ref,
                         int           dim,
                         int           paddedDim,
                         int           query_index,
-                        float       * d_gpu_dist){
+                        float       * d_gpu_dist,
+                        int         * d_index){
 
     // we need 3 * paddedDim * sizeof(float) shared memory
     extern __shared__ float smem[];
@@ -137,14 +139,14 @@ __global__ void padded_cdist(const float   * ref,
     unsigned int tid = threadIdx.x;
 
     // initialize smem, if tid < dim, copy data, else copy 0
-    smem[tid] = (tid < dim) ? ((ref[(tid*ref_nb)+blockIdx.x]) * (query[(tid*query_nb)+query_index])) : 0;
-    smem[tid+paddedDim] = (tid < dim) ? ((ref[(tid*ref_nb)+blockIdx.x]) * (ref[(tid*ref_nb)+blockIdx.x])) : 0;
+    smem[tid]               = (tid < dim) ? ((ref[(tid*ref_nb)+blockIdx.x]) * (query[(tid*query_nb)+query_index]))      : 0;
+    smem[tid+paddedDim]     = (tid < dim) ? ((ref[(tid*ref_nb)+blockIdx.x]) * (ref[(tid*ref_nb)+blockIdx.x]))           : 0;
     smem[tid+(2*paddedDim)] = (tid < dim) ? ((query[(tid*query_nb)+query_index]) * (query[(tid*query_nb)+query_index])) : 0;
 
     // perform first reduction step when copying data
     if (tid + blockDim.x < dim){
-        smem[tid] += ((ref[((tid+blockDim.x)*ref_nb)+blockIdx.x]) * (query[((tid+blockDim.x)*query_nb)+query_index]));
-        smem[tid+paddedDim] += ((ref[((tid+blockDim.x)*ref_nb)+blockIdx.x]) * (ref[((tid+blockDim.x)*ref_nb)+blockIdx.x]));
+        smem[tid]               += ((ref[((tid+blockDim.x)*ref_nb)+blockIdx.x]) * (query[((tid+blockDim.x)*query_nb)+query_index]));
+        smem[tid+paddedDim]     += ((ref[((tid+blockDim.x)*ref_nb)+blockIdx.x]) * (ref[((tid+blockDim.x)*ref_nb)+blockIdx.x]));
         smem[tid+(2*paddedDim)] += ((query[((tid+blockDim.x)*query_nb)+query_index]) * (query[((tid+blockDim.x)*query_nb)+query_index]));
     }
 
@@ -152,8 +154,8 @@ __global__ void padded_cdist(const float   * ref,
 
     for(unsigned int s=blockDim.x/2; s>0; s>>=1){
         if(tid < s){
-            smem[tid] += smem[tid + s];
-            smem[tid+blockDim.x] += smem[tid + s + blockDim.x];
+            smem[tid]                += smem[tid + s];
+            smem[tid+blockDim.x]     += smem[tid + s + blockDim.x];
             smem[tid+(2*blockDim.x)] += smem[tid + s + (2*blockDim.x)];
         }
         __syncthreads();
@@ -162,6 +164,7 @@ __global__ void padded_cdist(const float   * ref,
     // write result for this block to global memory
     if (tid == 0){
         d_gpu_dist[(query_nb*blockIdx.x)+query_index] = smem[0] / (sqrt(smem[blockDim.x]) * sqrt(smem[2*blockDim.x]));
+        d_index[(query_nb*blockIdx.x)+query_index] = blockIdx.x;
     }
 }
 
@@ -238,21 +241,117 @@ __global__ void get_min_interblock(const float* min_candidates,
 
 // count candidates in range [min, min+delta]
 // every thread in the block adds 1 in smem then we sum all vals into global like in "histogram"
+// do it using 1 block, each thread handles more queries in a for loop
 __global__ void get_candidates(const float* gpu_dist,
                                 const float* min_dist,
                                 int          query_index,
+                                int          ref_nb,
                                 int          query_nb,
                                 float        delta,
-                                int        * candidates){
-    
-    // set up shared mem
-    // sizeof(int) for #candidates in the block
-    extern __shared__ int smem;
+                                int        * candidates,
+                                int        * count){
 
-    if(gpu_dist[(query_nb*blockDim.x*blockIdx.x)+(threadIdx.x*query_nb)+query_index] <= min_dist[query_nb] + delta){
-        smem++;
+    // count candidates, every thread handles more queries and if condition is true flags corresponding cell and increase counter
+    for(unsigned int i=0; i<ref_nb/blockDim.x; i++){
+        if(gpu_dist[(query_nb*blockDim.x*i)+(threadIdx.x*query_nb)+query_index] < min_dist[query_index] + delta){
+            candidates[(query_nb*blockDim.x*i)+(threadIdx.x*query_nb)+query_index] = 1;
+            // printf("adding");
+            atomicAdd(&count[query_index], 1);
+        }
     }
-                                
+
+}
+
+// check if we have enough candidates in range [min, min+delta] for each query
+// count is a vector of size query_nb, so we need 1 block with query_nb threads
+// IT DOES NOT WORK FOR THREADS > 1024 
+__global__ void check_min_k(const int * count,
+                            int       k,
+                            int     * flag){
+    
+    if(count[threadIdx.x] < k){
+        *flag = 1;
+    }
+
+
+}
+
+/**
+ * Sort the distances stopping at K sorted elements
+ * exploit mask: h_candidates
+ */
+void masked_insertion_sort(float *dist, int *index, int * mask, int length, int k){
+    // Initialize the first index
+    index[0] = 0;
+
+    int skip_counter = 0;
+
+    // Go through all points
+    for(unsigned int i=0; i<length; i++){
+
+        float curr_dist = dist[i]; 
+        int curr_index = index[i];
+
+        // Skip the current value if its index is >= k and if it's higher the k-th already sorted smallest value
+        if (i >= k && curr_dist >= dist[k-1]) {
+            // printf("Skipping %d, ", i);
+            continue;
+        }
+
+        if(mask[i] == 0){
+            skip_counter++;
+            // printf("Skipping %d, ", i);
+            continue;
+        }
+
+        // Shift values (and indexes) higher that the current distance to the right
+        int j = min(i-skip_counter, k-1);
+        while (j > 0 && dist[j-1] > curr_dist) {
+            // printf("Shifting %d to %d\n", j-1, j);
+            dist[j]  = dist[j-1];
+            index[j] = index[j-1];
+            --j;
+        }
+
+        // Write the current distance and index at their position
+        dist[j]  = curr_dist;
+        index[j] = curr_index; 
+
+        // printf("passing %d\n", i);
+    }
+}
+
+
+void  insertion_sort(float *dist, int *index, int length, int k){
+
+    // Initialise the first index
+    index[0] = 0;
+
+    // Go through all points
+    for (int i=1; i<length; ++i) {
+
+        // Store current distance and associated index
+        float curr_dist  = dist[i];
+        int   curr_index = i;
+
+        // Skip the current value if its index is >= k and if it's higher the k-th slready sorted mallest value
+        if (i >= k && curr_dist >= dist[k-1]) {
+            continue;
+        }
+
+        // Shift values (and indexes) higher that the current distance to the right
+        int j = min(i, k-1);
+        while (j > 0 && dist[j-1] > curr_dist) {
+            // printf("Shifting %d to %d\n", j-1, j);
+            dist[j]  = dist[j-1];
+            index[j] = index[j-1];
+            --j;
+        }
+
+        // Write the current distance and index at their position
+        dist[j]  = curr_dist;
+        index[j] = curr_index; 
+    }
 }
 
 
@@ -334,12 +433,12 @@ void check_results(float * cpu_dist, float * gpu_dist, int ref_nb, int query_nb,
 
 
 int main(void) {
-    
+
     // Parameters 0 (to develop your solution)
     const int ref_nb   = 4096;
     const int query_nb = 1024;
     const int dim      = 64;
-    const int k        = 16;
+    const int k        = 5;
 
     // Parameters 1
     // const int ref_nb   = 16384;
@@ -365,49 +464,52 @@ int main(void) {
     // const int dim      = 1280;
     // const int k        = 4;
 
-    // Display
-    printf("PARAMETERS\n");
-    printf("- Number reference points : %d\n",   ref_nb);
-    printf("- Number query points     : %d\n",   query_nb);
-    printf("- Dimension of points     : %d\n",   dim);
-    printf("- Number of neighbors     : %d\n\n", k);
+    // Boring stuff
 
-    // Sanity check
-    if (ref_nb<k) {
-        printf("Error: k value is larger that the number of reference points\n");
-        return EXIT_FAILURE;
-    }
+        // Display
+        printf("PARAMETERS\n");
+        printf("- Number reference points : %d\n",   ref_nb);
+        printf("- Number query points     : %d\n",   query_nb);
+        printf("- Dimension of points     : %d\n",   dim);
+        printf("- Number of neighbors     : %d\n\n", k);
+
+        // Sanity check
+        if (ref_nb<k) {
+            printf("Error: k value is larger that the number of reference points\n");
+            return EXIT_FAILURE;
+        }
 
 
-    // Allocate input points and output k-NN distances / indexes
-    float * ref        = (float*) malloc(ref_nb   * dim * sizeof(float));
-    float * query      = (float*) malloc(query_nb * dim * sizeof(float));
+        // Allocate input points and output k-NN distances / indexes
+        float * ref        = (float*) malloc(ref_nb   * dim * sizeof(float));
+        float * query      = (float*) malloc(query_nb * dim * sizeof(float));
 
-    uint64_t o_matrix_size = 1LL * ref_nb * query_nb * sizeof(float);
+        uint64_t o_matrix_size = 1LL * ref_nb * query_nb * sizeof(float);
 
-    float * cpu_dist   = (float*) malloc(o_matrix_size);
-    float * h_gpu_dist   = (float*) malloc(o_matrix_size);
+        float * cpu_dist   = (float*) malloc(o_matrix_size);
+        float * h_gpu_dist = (float*) malloc(o_matrix_size);
+        int   * h_index    = (int*)   malloc(o_matrix_size);
+        
+        float * knn_dist   = (float*) malloc(o_matrix_size);
+        int   * knn_index  = (int*)   malloc(o_matrix_size);
+        
 
-    float * knn_dist   = (float*) malloc(o_matrix_size);
-    int   * knn_index  = (int*)   malloc(o_matrix_size);
+        // Allocation checks
+        if (!ref || !query || !cpu_dist || !h_gpu_dist || !knn_dist || !knn_index) {
+            printf("Error: Memory allocation error\n"); 
+            free(ref);
+            free(query);
+            free(cpu_dist);
+            free(h_gpu_dist);
+            free(knn_dist);
+            free(knn_index);
+            return EXIT_FAILURE;
+        }
+
+        // Initialize reference and query points with random values
+        initialize_data(ref, ref_nb, query, query_nb, dim);
 
     
-
-    // Allocation checks
-    if (!ref || !query || !cpu_dist || !h_gpu_dist || !knn_dist || !knn_index) {
-        printf("Error: Memory allocation error\n"); 
-        free(ref);
-	    free(query);
-	    free(cpu_dist);
-	    free(h_gpu_dist);
-        free(knn_dist);
-        free(knn_index);
-        return EXIT_FAILURE;
-    }
-
-    // Initialize reference and query points with random values
-    initialize_data(ref, ref_nb, query, query_nb, dim);
-
     // COSINE DISTANCE COMPUTATION CPU ----------------------------------------------------------------------------------------------------------------------
 
     printf("Performing cosine distance computation on CPU\n");
@@ -418,7 +520,7 @@ int main(void) {
 
     // Perform cosine distance computation on CPU
     for(unsigned int query_index=0; query_index<query_nb; query_index++){
-        if(query_index % 100 == 0) printf("Query %d\n", query_index);
+        // if(query_index % 100 == 0) printf("Query %d\n", query_index);
         for(unsigned int ref_index=0; ref_index<ref_nb; ref_index++){
             cpu_dist[(query_nb*ref_index)+query_index] = cosine_distance(ref, ref_nb, query, query_nb, dim, ref_index, query_index);
         }
@@ -445,14 +547,15 @@ int main(void) {
     printf("gridSize: %d\n", gridSize);
 
     // copy ref and query into cuda mem
-    float *d_ref, *d_query;
-    float *d_gpu_dist;
+    float   *d_ref, *d_query;
+    float   *d_gpu_dist;
+    int     *d_index;
 
     cudaMalloc(&d_ref, ref_nb * dim * sizeof(float));
     cudaMalloc(&d_query, ref_nb * dim * sizeof(float));
 
     cudaMalloc(&d_gpu_dist, o_matrix_size);
-    cudaMemset(d_gpu_dist, 100, o_matrix_size);
+    cudaMalloc(&d_index, o_matrix_size);
 
     cudaMemcpy(  d_ref,   ref, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_query, query, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
@@ -475,7 +578,7 @@ int main(void) {
 
     for(unsigned int query_index=0; query_index<query_nb; query_index++){
         // printf("Query %d\n", query_index);
-        padded_cdist<<< gridSize, paddedDim, smemSize >>>(d_ref, ref_nb, d_query, query_nb, dim, paddedDim, query_index, d_gpu_dist);
+        padded_cdist<<< gridSize, paddedDim, smemSize >>>(d_ref, ref_nb, d_query, query_nb, dim, paddedDim, query_index, d_gpu_dist, d_index);
     }
 
     // stop timer
@@ -489,9 +592,16 @@ int main(void) {
 
     //mem copy back to cpu
     cudaMemcpy(h_gpu_dist, d_gpu_dist, o_matrix_size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_index, d_index, o_matrix_size, cudaMemcpyDeviceToHost);
 
     // check results
     check_results(cpu_dist, h_gpu_dist, ref_nb, query_nb);
+
+
+    cudaFree(d_ref);
+    cudaFree(d_query);
+    free(ref);
+    free(query);
 
 
     // -------------- PART 2: k selection ------------------------------------------------------------------------------------------------------------------------------
@@ -564,19 +674,145 @@ int main(void) {
     printf("Percentage of errors: %f\n", (float) minfinder_error / (1LL * query_nb) * 100);
 
 
-    // -------------- PART 3: add delta and count candidates -------------------------------------------------------------------------------------
+    // -------------- PART 2.5: add delta and count candidates -------------------------------------------------------------------------------------
 
     // add delta
-    float M = 0.72;         // value selected analyzing the distribution of the min distances
     float delta = 0.1;
 
+    int *d_candidates;
+    int *d_count;
+    int *d_flag;
+
+    cudaMalloc(&d_candidates, query_nb * ref_nb * sizeof(float));
+    cudaMalloc(&d_count, query_nb * sizeof(int));
+
+    cudaMemset(d_candidates, 0, query_nb * ref_nb * sizeof(float));
+    cudaMemset(d_count, 0, query_nb * sizeof(int));
+
+    int *h_count = (int*) malloc(query_nb * sizeof(int));
+    int *h_candidates = (int*) calloc(query_nb * ref_nb, sizeof(int));
+    int *h_flag = (int*) malloc(sizeof(int));
+
+    //start timer
+    struct timeval  tv1_2, tv2_2;
+    gettimeofday(&tv1_2, NULL);
 
 
+    int collected_candidates = 0;
+    while(!collected_candidates){
+        printf("\n\nSearching for candidates\n");
+        for(unsigned int query_index=0; query_index<query_nb; query_index++){
+            get_candidates<<< 1, blockSize2 >>> (d_gpu_dist, d_min_dist, query_index, ref_nb, query_nb, delta, d_candidates, d_count);
+        }
+
+        cudaDeviceSynchronize();
+
+        check_min_k<<< 1, query_nb >>>(d_count, k, d_flag);
+
+
+        *h_flag = 0;
+        cudaMemcpy(h_flag, d_flag, sizeof(int), cudaMemcpyDeviceToHost);
+
+        if(*h_flag == 0){
+            collected_candidates = 1;
+        }
+        else{
+            delta += delta/2;
+            cudaMemset(d_count, 0, query_nb * sizeof(int));
+        }
+
+    }
+
+    // stop timer
+    gettimeofday(&tv2_2, NULL);
+
+    // compute and print the elapsed time in millisec
+    printf ("CANDIDATE SELECTION = %f milliseconds\n",
+             (double) (1000.0 * (tv2_2.tv_sec - tv1_2.tv_sec) + (tv2_2.tv_usec - tv1_2.tv_usec) / 1000.0));
+
+    cudaMemcpy(h_count, d_count, query_nb * sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_candidates, d_candidates, query_nb * ref_nb * sizeof(int), cudaMemcpyDeviceToHost);        // debug
+
+    // printf("h_count: %d", h_count[0]);
+
+    // // for each query check if all cells are zero
+    // for(unsigned int i=0; i<query_nb; i++){
+    //     int all_zero = 1;
+    //     for(unsigned int j=0; j<ref_nb; j++){
+    //         if(h_candidates[(query_nb*j)+i] != 0){
+    //             all_zero = 0;
+    //         }
+    //     }
+    //     if(!all_zero){
+    //         printf("Query %d: all cells are !zero\n", i);
+    //     }
+    // }
+
+    printf("number of candidates:\n");
+    for(unsigned int i=0; i<query_nb; i++){
+        printf("%d, ", h_count[i]);
+        // assert(h_count[i] >= k);
+    }
+    printf("\n");
+
+    // do insertion sort on cpu exploiting h_candidates
+    
+    for(unsigned int query_index=0; query_index<query_nb; query_index++){
+        if(1){
+            // get distances and indexes
+            float *dist = (float*) malloc(ref_nb * sizeof(float));
+            int *index = (int*) malloc(ref_nb * sizeof(int));
+
+            for(unsigned int ref_index=0; ref_index<ref_nb; ref_index++){
+                dist[ref_index] = cpu_dist[(query_nb*ref_index)+query_index];
+                index[ref_index] = ref_index;
+            }
+
+            // do insertion sort
+            masked_insertion_sort(dist, index, h_candidates+(query_nb*query_index), ref_nb, k);
+            
+            // print first k elements
+            printf("Query %d: ", query_index);
+            for(unsigned int i=0; i<k; i++){
+                printf("%f || ", dist[i]);
+            }
+            printf("\n");
+        }
+    }
+    // print h_gpu_dist
+    // for(unsigned int i=0; i<query_nb; i++){
+    //     printf("Query %d: ", i);
+    //     for(unsigned int j=0; j<k; j++){
+    //         printf("%f || ", h_gpu_dist[(query_nb*j)+i]);
+    //     }
+    //     printf("\n");
+    // }
+    
+
+    // // Copy k smallest distances and their associated index
+    // for(int i=0; i<query_nb; ++i){
+    //     for (int j=0; j<k; ++j) {
+    //         knn_dist[j * query_nb + i]  = h_gpu_dist[(i*query_nb)+j];
+    //         knn_index[j * query_nb + i] = h_index[(i*query_nb)+j];
+    //     }
+    // }
+    
+    // //print results
+    // printf("KNN DISTANCES:\n");
+    // for(unsigned int i=0; i<query_nb; i++){
+    //     for(unsigned int j=0; j<k; j++){
+    //         printf("%f || ", knn_dist[(query_nb*j)+i]);
+    //     }
+    //     printf("\n");
+    // }
+    
 
     // free cuda mem ------------------------------------------------------------------------------------------------------------------------------
-    cudaFree(d_ref);
-    cudaFree(d_query);
     cudaFree(d_gpu_dist);
     cudaFree(d_min_distances);
     cudaFree(d_min_dist);
+    cudaFree(d_candidates);
+    cudaFree(d_count);
+    cudaFree(d_flag);
+    cudaFree(d_index);
 }
