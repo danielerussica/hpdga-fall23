@@ -540,29 +540,29 @@ int main(void) {
     
     // COSINE DISTANCE COMPUTATION CPU ----------------------------------------------------------------------------------------------------------------------
 
-    printf("Performing cosine distance computation on CPU\n");
+        printf("Performing cosine distance computation on CPU\n");
 
-    // start timer
-    struct timeval  tv1_cpu, tv2_cpu;
-    gettimeofday(&tv1_cpu, NULL);
+        // start timer
+        struct timeval  tv1_cpu, tv2_cpu;
+        gettimeofday(&tv1_cpu, NULL);
 
-    // Perform cosine distance computation on CPU
-    for(unsigned int query_index=0; query_index<query_nb; query_index++){
-        // if(query_index % 100 == 0) printf("Query %d\n", query_index);
-        for(unsigned int ref_index=0; ref_index<ref_nb; ref_index++){
-            cpu_dist[(query_nb*ref_index)+query_index] = cosine_distance(ref, ref_nb, query, query_nb, dim, ref_index, query_index);
+        // Perform cosine distance computation on CPU
+        for(unsigned int query_index=0; query_index<query_nb; query_index++){
+            // if(query_index % 100 == 0) printf("Query %d\n", query_index);
+            for(unsigned int ref_index=0; ref_index<ref_nb; ref_index++){
+                cpu_dist[(query_nb*ref_index)+query_index] = cosine_distance(ref, ref_nb, query, query_nb, dim, ref_index, query_index);
+            }
         }
-    }
 
-    // stop timer
-    gettimeofday(&tv2_cpu, NULL);
+        // stop timer
+        gettimeofday(&tv2_cpu, NULL);
 
-    // compute and print the elapsed time in millisec
-    printf ("Total time = %f milliseconds\n",
-             (double) (1000.0 * (tv2_cpu.tv_sec - tv1_cpu.tv_sec) + (tv2_cpu.tv_usec - tv1_cpu.tv_usec) / 1000.0));
+        // compute and print the elapsed time in millisec
+        printf ("Total time = %f milliseconds\n",
+                (double) (1000.0 * (tv2_cpu.tv_sec - tv1_cpu.tv_sec) + (tv2_cpu.tv_usec - tv1_cpu.tv_usec) / 1000.0));
 
-    // print results
-    // print_matrix(cpu_dist, ref_nb, query_nb);
+        // print results
+        // print_matrix(cpu_dist, ref_nb, query_nb);
 
     // COSINE DISTANCE COMPUTATION GPU ----------------------------------------------------------------------------------------------------------------------
     
@@ -795,7 +795,7 @@ int main(void) {
             int *index = (int*) malloc(ref_nb * sizeof(int));
 
             for(unsigned int ref_index=0; ref_index<ref_nb; ref_index++){
-                dist[ref_index] = cpu_dist[(query_nb*ref_index)+query_index];
+                dist[ref_index] = h_gpu_dist[(query_nb*ref_index)+query_index];
                 index[ref_index] = ref_index;
             }
 
