@@ -355,31 +355,28 @@ void  insertion_sort(float *dist, int *index, int length, int k){
  * Selection sort the distances stopping at K sorted elements
  * exploit mask: h_candidates
  */
-void selection_sort(float *dist, int *index, int *mask, int length, int k, int query_index, int query_nb){
+void selection_sort(float *dist, int *index, int *mask, int length, int k, int query_index, int query_nb, float *knn_dist, int *knn_index){
 
     for(int i=0; i<k; i++){
-        int min_index = i;
-        float min_dist = dist[i];
+        float min_value = 1;
+        int min_index = 0;
 
-        for(int j=i+1; j<length; j++){
+        for(int j=0; j<length; j++){
             if(mask[(j*query_nb)+query_index] == 0){
                 continue;
             }
-            if(dist[j] < min_dist){
-                min_dist = dist[j];
+            if(dist[j] < min_value){
+                min_value = dist[j];
                 min_index = j;
             }
         }
 
-        // swap
-        float temp_dist = dist[i];
-        int temp_index = index[i];
+        // place values in knn_dist and knn_index
+        knn_dist[(query_nb*i)+query_index] = min_value;
+        knn_index[(query_nb*i)+query_index] = min_index;
 
-        dist[i] = min_dist;
-        index[i] = min_index;
+        dist[min_index] = 1;
 
-        dist[min_index] = temp_dist;
-        index[min_index] = temp_index;
     }
 }
 
@@ -789,34 +786,63 @@ int main(void) {
     // do insertion sort on cpu exploiting h_candidates
     
     for(unsigned int query_index=0; query_index<query_nb; query_index++){
-        if(1){
-            // get distances and indexes
-            float *dist = (float*) malloc(ref_nb * sizeof(float));
-            int *index = (int*) malloc(ref_nb * sizeof(int));
+        // get distances and indexes
+        float *dist = (float*) malloc(ref_nb * sizeof(float));
+        int *index = (int*) malloc(ref_nb * sizeof(int));
 
-            for(unsigned int ref_index=0; ref_index<ref_nb; ref_index++){
-                dist[ref_index] = h_gpu_dist[(query_nb*ref_index)+query_index];
-                index[ref_index] = ref_index;
-            }
-
-            // do insertion sort
-            masked_insertion_sort(dist, index, h_candidates, ref_nb, k, query_index, query_nb);
-            // insertion_sort(dist, index, ref_nb, k);
-            // selection_sort(dist, index, h_candidates, ref_nb, k, query_index, query_nb);
-            
-            // print first k elements
-            printf("Query %d: ", query_index);
-            for(unsigned int i=0; i<k; i++){
-                printf("%f || ", dist[i]);
-            }
-            printf("\n");
-
-            // copy k smallest distances and their associated index
-            for (int j=0; j<k; ++j) {
-            knn_dist[j * query_nb + query_index]  = dist[j];
-            knn_index[j * query_nb + query_index] = index[j];
+        for(unsigned int ref_index=0; ref_index<ref_nb; ref_index++){
+            dist[ref_index] = h_gpu_dist[(query_nb*ref_index)+query_index];
+            index[ref_index] = ref_index;
         }
+
+        // do insertion sort
+        // masked_insertion_sort(dist, index, h_candidates, ref_nb, k, query_index, query_nb);
+        // insertion_sort(dist, index, ref_nb, k);
+        selection_sort(dist, index, h_candidates, ref_nb, k, query_index, query_nb, knn_dist, knn_index);
+        
+        // print first k elements
+        // printf("Query %d: ", query_index);
+        // for(unsigned int i=0; i<k; i++){
+        //     printf("%f || ", dist[i]);
+        // }
+        // printf("\n");
+
+        // copy k smallest distances and their associated index (done in selection_sort)
+        // for (int j=0; j<k; ++j) {
+        //     knn_dist[j * query_nb + query_index]  = dist[j];
+        //     knn_index[j * query_nb + query_index] = index[j];
+        // }
+    }
+
+    // write distances and indexes to file
+    FILE *f = fopen("distances.txt", "w");
+    if (f == NULL)
+    {
+        printf("Error opening file!\n");
+        exit(1);
+    }
+
+    for(unsigned int i=0; i<query_nb; i++){
+        for(unsigned int j=0; j<k; j++){
+            fprintf(f, "%f ", knn_dist[(query_nb*j)+i]);
         }
+        fprintf(f, "\n");
+    }
+
+    fclose(f);
+
+    f = fopen("indexes.txt", "w");
+    if (f == NULL)
+    {
+        printf("Error opening file!\n");
+        exit(1);
+    }
+
+    for(unsigned int i=0; i<query_nb; i++){
+        for(unsigned int j=0; j<k; j++){
+            fprintf(f, "%d ", knn_index[(query_nb*j)+i]);
+        }
+        fprintf(f, "\n");
     }
 
 
