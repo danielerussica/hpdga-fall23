@@ -365,9 +365,9 @@ void selection_sort(float *dist, int *index, int *mask, int length, int k, int q
             if(mask[(j*query_nb)+query_index] == 0){
                 continue;
             }
-            if(dist[j] < min_value){
-                min_value = dist[j];
-                min_index = j;
+            if(dist[(j*query_nb)+query_index] < min_value){
+                min_value = dist[(j*query_nb)+query_index];
+                min_index = index[(j*query_nb)+query_index];
             }
         }
 
@@ -375,7 +375,7 @@ void selection_sort(float *dist, int *index, int *mask, int length, int k, int q
         knn_dist[(query_nb*i)+query_index] = min_value;
         knn_index[(query_nb*i)+query_index] = min_index;
 
-        dist[min_index] = 1;
+        dist[(min_index*query_nb)+query_index] = 1;
 
     }
 }
@@ -513,7 +513,7 @@ int main(void) {
 
         float * cpu_dist   = (float*) malloc(o_matrix_size);
         float * h_gpu_dist = (float*) malloc(o_matrix_size);
-        int   * h_index    = (int*)   malloc(o_matrix_size);
+        int   * h_gpu_index    = (int*)   malloc(o_matrix_size);
         
         float * knn_dist   = (float*) malloc(o_matrix_size);
         int   * knn_index  = (int*)   malloc(o_matrix_size);
@@ -617,7 +617,7 @@ int main(void) {
 
     //mem copy back to cpu
     cudaMemcpy(h_gpu_dist, d_gpu_dist, o_matrix_size, cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_index, d_index, o_matrix_size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_gpu_index, d_index, o_matrix_size, cudaMemcpyDeviceToHost);
 
     // check results
     check_results(cpu_dist, h_gpu_dist, ref_nb, query_nb);
@@ -786,19 +786,11 @@ int main(void) {
     // do insertion sort on cpu exploiting h_candidates
     
     for(unsigned int query_index=0; query_index<query_nb; query_index++){
-        // get distances and indexes
-        float *dist = (float*) malloc(ref_nb * sizeof(float));
-        int *index = (int*) malloc(ref_nb * sizeof(int));
-
-        for(unsigned int ref_index=0; ref_index<ref_nb; ref_index++){
-            dist[ref_index] = h_gpu_dist[(query_nb*ref_index)+query_index];
-            index[ref_index] = ref_index;
-        }
 
         // do insertion sort
         // masked_insertion_sort(dist, index, h_candidates, ref_nb, k, query_index, query_nb);
         // insertion_sort(dist, index, ref_nb, k);
-        selection_sort(dist, index, h_candidates, ref_nb, k, query_index, query_nb, knn_dist, knn_index);
+        selection_sort(h_gpu_dist, h_gpu_index, h_candidates, ref_nb, k, query_index, query_nb, knn_dist, knn_index);
         
         // print first k elements
         // printf("Query %d: ", query_index);
