@@ -311,13 +311,30 @@ int main(void) {
 
     // Test all k-NN functions
     printf("TESTS\n");
-    test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &knn_c,            "knn_c",              2);
-    test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &your_solution,  "yourSolution",         100);
+    // test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &knn_c,            "knn_c",              1);
+    test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &your_solution_baseline,  "baseline",         1);
+    test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &your_solution_only_dist,  "onlydist", 1);
+
+
+
+    your_solution_only_dist(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index);
+
+    // print first 3 row
+    for (int i = 0; i < 3; i++)
+    {
+        printf("query %d: ", i);
+        for (int j = 0; j < k; j++)
+        {
+            printf("%f ", knn_dist[j * query_nb + i]);
+        }
+        printf("\n");
+    }
+
 
     // Deallocate memory 
     free(ref);
     free(query);
-    free(knn_dist);
+    free(knn_dist); 
     free(knn_index);
 
     return EXIT_SUCCESS;

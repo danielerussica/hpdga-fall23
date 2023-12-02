@@ -651,7 +651,7 @@ int main(void) {
     printf("\n\nSearching for min\n");
     printf("blockSize: %d\n", blockSize2);
     printf("gridSize: %d\n", gridSize2);
-    // select k nearest neighbors
+    // get min for each query
     for(unsigned int query_index=0; query_index<query_nb; query_index++){
         get_min_intrablock<<< gridSize2, blockSize2, blockSize2 * sizeof(float) >>>(d_gpu_dist, query_index, query_nb, d_min_distances);
         get_min_interblock<<< 1, gridSize2, gridSize2 * sizeof(float) >>>(d_min_distances, query_index, d_min_dist);
