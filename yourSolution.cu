@@ -3,6 +3,12 @@
 
 #define CUTOFF_VALUE 0.75
 
+// TODO:
+// - test if branching to perform first operation on shared mem is worth it (getmins)
+// - implementing streams in k selection --> done but 0.95% working
+// - implement stream compaction (pretty hard rn)
+
+
 // -- OLD VERSION --
 /*
     * Compute the cosine distance between two vectors
@@ -322,9 +328,11 @@ __global__ void get_min_interblock(const float* min_candidates,
     }
 }
 
-// new version that handles indexes as well
-// get min, add delta check how many candidates are in the range
-// TODO: do first reduction step when copying data
+// -- USED FOR PICK_K ON GPU --
+/*
+    * Find min using reduction, then set corresponding value to 1 in gpu_dist and repeat k times
+    * Handles distances and indexes
+*/
 __global__ void get_min_intrablock2(const float* gpu_dist,
                                     const int  * gpu_index,
                                     int          query_index,
@@ -360,7 +368,11 @@ __global__ void get_min_intrablock2(const float* gpu_dist,
 
 }
 
-// new version that handles indexes as well
+// -- USED FOR PICK_K ON GPU --
+/*
+    * Find min using reduction, then set corresponding value to 1 in gpu_dist and repeat k times
+    * Handles distances and indexes
+*/
 __global__ void get_min_interblock2(const float* min_candidates,
                                     const int  * min_index_candidates,
                                     float     * gpu_dist,
@@ -407,6 +419,103 @@ __global__ void get_min_interblock2(const float* min_candidates,
 }
 
 
+// -- USED FOR PICK_K ON GPU --
+/*
+    * Find min using reduction, then set corresponding value to 1 in gpu_dist and repeat k times
+    * Handles distances and indexes
+    * Handles offset for streams
+*/
+__global__ void get_min_intrablock3(const float* gpu_dist,
+                                    const int  * gpu_index,
+                                    int          query_index,
+                                    int          offset,
+                                    int          query_nb,
+                                    float      * min_candidates,
+                                    int        * min_index_candidates){
+
+    // set up shared mem
+    // 2 * blockDim * sizeof(float) for distances and indexes
+    extern __shared__ float smem[];
+    
+    // copy distances and indexes to shared mem
+    smem[threadIdx.x] = gpu_dist[(query_nb*blockDim.x*blockIdx.x)+(threadIdx.x*query_nb) + offset + query_index];
+    smem[threadIdx.x+blockDim.x] = gpu_index[(query_nb*blockDim.x*blockIdx.x)+(threadIdx.x*query_nb) + offset + query_index];
+
+    __syncthreads();
+
+    // find min
+    for(unsigned int s=blockDim.x/2; s>0; s>>=1){
+        if(threadIdx.x < s){
+            if(smem[threadIdx.x] > smem[threadIdx.x + s]){
+                smem[threadIdx.x] = smem[threadIdx.x + s];
+                smem[threadIdx.x+blockDim.x] = smem[threadIdx.x + s + blockDim.x];
+            }
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0){
+        min_candidates[blockIdx.x] = smem[0];
+        min_index_candidates[blockIdx.x] = smem[blockDim.x];
+    }  
+
+}
+
+// -- USED FOR PICK_K ON GPU --
+/*
+    * Find min using reduction, then set corresponding value to 1 in gpu_dist and repeat k times
+    * Handles distances and indexes
+*/
+__global__ void get_min_interblock3(const float* min_candidates,
+                                    const int  * min_index_candidates,
+                                    float     * gpu_dist,
+                                    int        query_index,
+                                    int        offset,
+                                    int        query_nb,
+                                    int         i,
+                                    int         k,
+                                    float      * knn_dist,
+                                    int        * knn_index){
+
+    // set up shared mem
+    extern __shared__ float smem[];
+    
+    // copy distances and indexes to shared mem
+    smem[threadIdx.x] = min_candidates[threadIdx.x];
+    smem[threadIdx.x+blockDim.x] = min_index_candidates[threadIdx.x];
+
+    __syncthreads();
+
+    // find min
+    for(unsigned int s=blockDim.x/2; s>0; s>>=1){
+        if(threadIdx.x < s){
+            if(smem[threadIdx.x] > smem[threadIdx.x + s]){
+                smem[threadIdx.x] = smem[threadIdx.x + s];
+                smem[threadIdx.x+blockDim.x] = smem[threadIdx.x + s + blockDim.x];
+            }
+        }
+        __syncthreads();
+    }
+
+    // write result for this block to global memory
+    if (threadIdx.x == 0){
+        int min_index = smem[blockDim.x];
+
+        knn_dist[(query_nb*i)+query_index+offset] = smem[0];
+        knn_index[(query_nb*i)+query_index+offset] = min_index;
+
+        // printf("placing %f at index: %d\n", smem[0], (k*query_index)+i);
+
+        // set gpu_dist["min_index"] to 1
+        gpu_dist[(min_index*query_nb)+query_index+offset] = 1;
+
+    }
+}
+
+
+
+
+// -- USED IN BASELINE APPROACH (it sucks) --
 // count candidates in range [min, min+delta]
 // every thread in the block adds 1 in smem then we sum all vals into global like in "histogram"
 // do it using 1 block, each thread handles more queries in a for loop
@@ -1000,8 +1109,116 @@ bool your_solution_pick_k_on_gpu(const float * ref,
     cudaMemcpy(knn_dist, d_knn_dist, query_nb * k * sizeof(float), cudaMemcpyDeviceToHost);
     cudaMemcpy(knn_index, d_knn_index, query_nb * k * sizeof(int), cudaMemcpyDeviceToHost);
 
-    // fprintf in a file knn_dist and knn_index
-    FILE *f = fopen("knn_dist_ver4.txt", "w");
+    return true;
+}
+
+
+
+bool your_solution_pick_k_on_gpu_w_stream(const float * ref,
+                     int           ref_nb,
+                     const float * query,
+                     int           query_nb,
+                     int           dim,
+                     int           k,
+                     float *       knn_dist,    // output fields
+                     int *         knn_index) {
+
+
+
+    // Solution that naively pick k-smallest on gpu using reduction
+    uint64_t o_matrix_size = 1LL * ref_nb * query_nb * sizeof(float);
+
+    float * cpu_dist   = (float*) malloc(o_matrix_size);
+    float * h_gpu_dist = (float*) malloc(o_matrix_size);
+    int   * h_gpu_index    = (int*)   malloc(o_matrix_size);
+
+    int blockSize = dim;        // Number of threads per block
+    int gridSize = ref_nb;      // Number of blocks
+
+    // printf("blockSize: %d\n", blockSize);
+    // printf("gridSize: %d\n", gridSize);
+
+    // copy ref and query into cuda mem
+    float   *d_ref, *d_query;
+    float   *d_gpu_dist;
+    int     *d_index;
+
+    cudaMalloc(&d_ref, ref_nb * dim * sizeof(float));
+    cudaMalloc(&d_query, ref_nb * dim * sizeof(float));
+
+    cudaMalloc(&d_gpu_dist, o_matrix_size);
+    cudaMalloc(&d_index, o_matrix_size);
+
+    cudaMemcpy(  d_ref,   ref, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_query, query, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
+
+
+    // Calculate the next power of 2 for dim
+    int nextPow2 = 1;
+    while (nextPow2 < dim) {
+        nextPow2 <<= 1;
+    }
+
+    // Calculate the number of elements required in smem with padding
+    int paddedDim = nextPow2/2;
+    int smemSize = 3 * paddedDim * sizeof(float);
+    // printf("paddedDim: %d\n", paddedDim);
+
+    for(unsigned int query_index=0; query_index<query_nb; query_index++){
+        // printf("Query %d\n", query_index);
+        padded_cdist<<< gridSize, paddedDim, smemSize >>>(d_ref, ref_nb, d_query, query_nb, dim, paddedDim, query_index, d_gpu_dist, d_index);
+    }
+
+    cudaDeviceSynchronize();
+
+
+    // K SELECTION --------------------------------------------------------------------------------------------------------------------------------
+
+    int blockSize2 = 64;        // (tested: 64>512 with param1) Test to find the best value theoretically we want second level to use at least 32 blocks to avoid inactive threads in block
+    int gridSize2 = ref_nb/blockSize2;
+
+    // allocate cuda mem
+    float *d_min_distances;
+    int *d_min_indexes;
+
+    float *d_knn_dist;
+    int *d_knn_index;
+    
+
+    cudaMalloc(&d_min_distances, query_nb * gridSize2 * sizeof(float));
+    cudaMalloc(&d_min_indexes, query_nb * gridSize2 * sizeof(int));
+
+    cudaMalloc(&d_knn_dist, query_nb * k * sizeof(float));
+    cudaMalloc(&d_knn_index, query_nb * k * sizeof(int));
+    
+    // create n streams, divide gpu_dist and gpu_index into 4 parts and do k selection on each stream
+    int n_streams = 4;
+    cudaStream_t stream[n_streams];
+
+    for (int i = 0; i < n_streams; i++) {
+        cudaStreamCreate(&stream[i]);
+    }
+
+    // array of streams
+
+    int offset = query_nb/n_streams;
+
+    for(unsigned int i=0; i<k; i++){
+        for(unsigned int query_index=0; query_index<query_nb/n_streams; query_index++){
+            for(int j=0; j<n_streams; j++){
+                get_min_intrablock3<<< gridSize2, blockSize2, 2 * blockSize2 * sizeof(float), stream[j] >>>(d_gpu_dist, d_index, query_index, offset*j, query_nb, d_min_distances, d_min_indexes);
+                get_min_interblock3<<< 1, gridSize2, 2 * gridSize2 * sizeof(float), stream[j] >>>(d_min_distances, d_min_indexes, d_gpu_dist, query_index, offset*j, query_nb, i, k, d_knn_dist, d_knn_index);
+            }
+        }
+    }
+
+    // mem copy back to cpu
+    cudaMemcpy(knn_dist, d_knn_dist, query_nb * k * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(knn_index, d_knn_index, query_nb * k * sizeof(int), cudaMemcpyDeviceToHost);
+
+
+    //fprintf knn_dist and knn_index to file
+    FILE *f = fopen("knn_dist.txt", "w");
     if (f == NULL)
     {
         printf("Error opening file!\n");
@@ -1010,14 +1227,14 @@ bool your_solution_pick_k_on_gpu(const float * ref,
 
     for(unsigned int i=0; i<query_nb; i++){
         for(unsigned int j=0; j<k; j++){
-            fprintf(f, "%f ", knn_dist[(k*i)+j]);
+            fprintf(f, "%f ", knn_dist[(query_nb*j)+i]);
         }
         fprintf(f, "\n");
     }
 
     fclose(f);
 
-    f = fopen("knn_index_ver4.txt", "w");
+    f = fopen("knn_index.txt", "w");
     if (f == NULL)
     {
         printf("Error opening file!\n");
@@ -1026,12 +1243,22 @@ bool your_solution_pick_k_on_gpu(const float * ref,
 
     for(unsigned int i=0; i<query_nb; i++){
         for(unsigned int j=0; j<k; j++){
-            fprintf(f, "%d ", knn_index[(k*i)+j]);
+            fprintf(f, "%d ", knn_index[(query_nb*j)+i]);
         }
         fprintf(f, "\n");
     }
 
+    fclose(f);
 
+    // free cuda mem
+    cudaFree(d_ref);
+    cudaFree(d_query);
+    cudaFree(d_min_distances);
+    cudaFree(d_min_indexes);
+    cudaFree(d_knn_dist);
+    cudaFree(d_knn_index);
+    cudaFree(d_gpu_dist);
+    cudaFree(d_index);
 
 
 
