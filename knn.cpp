@@ -212,6 +212,7 @@ bool test(const float * ref,
         if (fabs(test_knn_dist[i] - gt_knn_dist[i]) <= precision) {
             nb_correct_precisions++;
         }
+        else printf("test_knn_dist[%d] = %f, gt_knn_dist[%d] = %f\n", i, test_knn_dist[i], i, gt_knn_dist[i]);
         if (test_knn_index[i] == gt_knn_index[i]) {
             nb_correct_indexes++;
         }
@@ -220,6 +221,8 @@ bool test(const float * ref,
     // Compute accuracy
     float precision_accuracy = nb_correct_precisions / ((float) query_nb * k);
     float index_accuracy     = nb_correct_indexes    / ((float) query_nb * k);
+
+    printf("precision = %5.3f, index = %5.3f, time = %8.5f s", precision_accuracy, index_accuracy, elapsed_time / nb_iterations);
 
     // Display report
     if (precision_accuracy >= min_accuracy && index_accuracy >= min_accuracy ) {
@@ -311,24 +314,17 @@ int main(void) {
 
     // Test all k-NN functions
     printf("TESTS\n");
-    // test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &knn_c,            "knn_c",              1);
-    test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &your_solution_baseline,  "baseline",         1);
-    test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &your_solution_only_dist,  "onlydist", 1);
-
-
-
-    your_solution_only_dist(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index);
-
-    // print first 3 row
-    for (int i = 0; i < 3; i++)
-    {
-        printf("query %d: ", i);
-        for (int j = 0; j < k; j++)
-        {
-            printf("%f ", knn_dist[j * query_nb + i]);
-        }
-        printf("\n");
-    }
+    test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &knn_c,            "knn_c",              1);
+    // test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &your_solution_baseline,  "baseline",         10);
+    // test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &your_solution_only_dist,  "onlydist", 20);
+    // test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &your_solution_pick_k_on_gpu,  "pick_k", 20);
+    test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &ys_pick_kgpu_innerfor,  "innerfor", 20);
+    // test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &your_solution_pick_k_on_gpu_w_stream,  "streams", 20);
+    
+    
+    ys_pick_kgpu_innerfor(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index);
+    
+    // fprint
 
 
     // Deallocate memory 
