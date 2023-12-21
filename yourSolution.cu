@@ -1,5 +1,6 @@
 #include "kernels.cu"
-
+#include "old_kernels.cu"
+#include <iostream>
 
 bool your_solution_baseline(const float * ref,
                      int           ref_nb,
@@ -28,13 +29,13 @@ bool your_solution_baseline(const float * ref,
     int     *d_index;
 
     cudaMalloc(&d_ref, ref_nb * dim * sizeof(float));
-    cudaMalloc(&d_query, ref_nb * dim * sizeof(float));
+    cudaMalloc(&d_query, query_nb * dim * sizeof(float));
 
     cudaMalloc(&d_gpu_dist, o_matrix_size);
     cudaMalloc(&d_index, o_matrix_size);
 
     cudaMemcpy(  d_ref,   ref, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_query, query, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_query, query, query_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
 
 
     // Calculate the next power of 2 for dim
@@ -198,13 +199,13 @@ bool your_solution_only_dist(const float * ref,
     int     *d_index;
 
     cudaMalloc(&d_ref, ref_nb * dim * sizeof(float));
-    cudaMalloc(&d_query, ref_nb * dim * sizeof(float));
+    cudaMalloc(&d_query, query_nb * dim * sizeof(float));
 
     cudaMalloc(&d_gpu_dist, o_matrix_size);
     cudaMalloc(&d_index, o_matrix_size);
 
     cudaMemcpy(  d_ref,   ref, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_query, query, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_query, query, query_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
 
 
     // Calculate the next power of 2 for dim
@@ -280,7 +281,7 @@ bool your_solution_stream_compaction(const float * ref,
     int     *d_prefix_sum;
 
     cudaMalloc(&d_ref, ref_nb * dim * sizeof(float));
-    cudaMalloc(&d_query, ref_nb * dim * sizeof(float));
+    cudaMalloc(&d_query, query_nb * dim * sizeof(float));
 
     cudaMalloc(&d_gpu_dist, o_matrix_size);
     cudaMalloc(&d_index, o_matrix_size);
@@ -288,7 +289,7 @@ bool your_solution_stream_compaction(const float * ref,
     cudaMalloc(&d_prefix_sum, query_nb * sizeof(int));
 
     cudaMemcpy(  d_ref,   ref, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_query, query, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_query, query, query_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
 
 
     // Calculate the next power of 2 for dim
@@ -373,13 +374,13 @@ bool your_solution_pick_k_on_gpu(const float * ref,
     int     *d_index;
 
     cudaMalloc(&d_ref, ref_nb * dim * sizeof(float));
-    cudaMalloc(&d_query, ref_nb * dim * sizeof(float));
+    cudaMalloc(&d_query, query_nb * dim * sizeof(float));
 
     cudaMalloc(&d_gpu_dist, o_matrix_size);
     cudaMalloc(&d_index, o_matrix_size);
 
     cudaMemcpy(  d_ref,   ref, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_query, query, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_query, query, query_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
 
 
     // Calculate the next power of 2 for dim
@@ -468,13 +469,13 @@ bool your_solution_pick_k_on_gpu_w_stream(const float * ref,
     int     *d_index;
 
     cudaMalloc(&d_ref, ref_nb * dim * sizeof(float));
-    cudaMalloc(&d_query, ref_nb * dim * sizeof(float));
+    cudaMalloc(&d_query, query_nb * dim * sizeof(float));
 
     cudaMalloc(&d_gpu_dist, o_matrix_size);
     cudaMalloc(&d_index, o_matrix_size);
 
     cudaMemcpy(  d_ref,   ref, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_query, query, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_query, query, query_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
 
 
     // COSINE DISTANCE --------------------------------------------------------------------------------------------------------------------------------
@@ -592,7 +593,7 @@ bool your_solution_pick_k_on_gpu_w_stream(const float * ref,
     return true;
 }
 
-
+// get_min4 is broken...
 bool ys_pick_kgpu_innerfor(const float * ref,
                      int           ref_nb,
                      const float * query,
@@ -623,13 +624,13 @@ bool ys_pick_kgpu_innerfor(const float * ref,
     int     *d_index;
 
     cudaMalloc(&d_ref, ref_nb * dim * sizeof(float));
-    cudaMalloc(&d_query, ref_nb * dim * sizeof(float));
+    cudaMalloc(&d_query, query_nb * dim * sizeof(float));
 
     cudaMalloc(&d_gpu_dist, o_matrix_size);
     cudaMalloc(&d_index, o_matrix_size);
 
     cudaMemcpy(  d_ref,   ref, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_query, query, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_query, query, query_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
 
 
     // Calculate the next power of 2 for dim
@@ -718,6 +719,120 @@ bool ys_pick_kgpu_innerfor(const float * ref,
     }
 
     fclose(f);
+
+    return true;
+}
+
+
+bool ys_for_param2(const float * ref,
+                     int           ref_nb,
+                     const float * query,
+                     int           query_nb,
+                     int           dim,
+                     int           k,
+                     float *       knn_dist,    // output fields
+                     int *         knn_index) {
+
+    // ds that must be allocated
+    float   *d_ref, *d_query;
+
+    cudaMalloc(&d_ref, ref_nb * dim * sizeof(float));
+    cudaMalloc(&d_query, query_nb * dim * sizeof(float));
+
+    cudaMemcpy(  d_ref,   ref, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_query, query, query_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
+
+    float *d_knn_dist;
+    int *d_knn_index;
+
+    cudaMalloc(&d_knn_dist, query_nb * k * sizeof(float));
+    cudaMalloc(&d_knn_index, query_nb * k * sizeof(int));
+
+    // Get device properties
+    int deviceId = 0;
+    cudaSetDevice(deviceId);
+    cudaDeviceProp deviceProp;
+    cudaGetDeviceProperties(&deviceProp, deviceId);
+    std::cout << "Total GPU Global Memory: " << deviceProp.totalGlobalMem / (1024 * 1024) << " MB\n";
+
+    uint64_t o_matrix_size = 1L * ref_nb * query_nb * sizeof(float);
+
+    uint64_t batches = ceil((double)2*o_matrix_size/(deviceProp.totalGlobalMem));
+    std::cout << "batches = " << o_matrix_size << "/" << deviceProp.totalGlobalMem << " = " << batches << "\n";  
+
+    int gridSize = ref_nb;      // Number of blocks for cdist
+
+    for(unsigned int batch = 0; batch<batches; batch++){
+        
+        printf("batch %d\n", batch);
+
+        float   *d_gpu_dist;
+        int     *d_index;
+
+        cudaMalloc(&d_gpu_dist, o_matrix_size/batches);
+        cudaMalloc(&d_index, o_matrix_size/batches);
+
+        // Calculate the next power of 2 for dim
+        int nextPow2 = 1;
+        while (nextPow2 < dim) {
+            nextPow2 <<= 1;
+        }
+
+        // Calculate the number of elements required in smem with padding
+        int paddedDim = nextPow2/2;
+        int smemSize = 3 * paddedDim * sizeof(float);
+
+        cdist3<<< gridSize, paddedDim, smemSize >>>(d_ref, ref_nb, d_query, query_nb/batches, dim, paddedDim, batch*(query_nb/batches),d_gpu_dist, d_index);
+
+        printf("end cdist\n");
+
+        // batch k selection ----------------------------------------------------------------------------------------------------------------------
+        int blockSize2 = 1024;
+        int gridSize2 = ref_nb/blockSize2;
+
+        nextPow2 = 1;
+        while (nextPow2 < gridSize2) {
+            nextPow2 <<= 1;
+        }
+
+        int interblockGridSize = nextPow2;
+        printf("paddedGridSize2: %d\n", interblockGridSize);
+
+        // allocate cuda mem
+        float *d_min_distances;
+        int *d_min_indexes;
+
+        cudaMalloc(&d_min_distances, query_nb/batches * gridSize2 * sizeof(float));
+        cudaMalloc(&d_min_indexes,   query_nb/batches * gridSize2 * sizeof(int));
+
+        // to do: try to implement stream version of this
+        for(unsigned int i=0; i<k; i++){
+            for(unsigned int query_index=0; query_index<query_nb/batches; query_index++){
+                get_min_intrablock3<<< gridSize2, blockSize2, 2 * blockSize2 * sizeof(float) >>>(d_gpu_dist, d_index, query_index, 0, query_nb/batches, d_min_distances, d_min_indexes);
+                // temp_print_candidates<<< 1, 1>>>(d_min_distances, gridSize2, query_nb/batches); 
+                get_min_interblock5<<< 1, interblockGridSize, 2 * interblockGridSize * sizeof(float) >>>(d_min_distances, d_min_indexes, gridSize2, d_gpu_dist, query_index,  query_nb/batches, batch*(query_nb/batches),batches, i, k, d_knn_dist, d_knn_index);
+            }
+        }
+
+        printf("end k selection\n");
+
+        cudaFree(d_gpu_dist);
+        cudaFree(d_index);
+        cudaFree(d_min_distances);
+        cudaFree(d_min_indexes);
+    }
+
+
+
+    // mem copy back to cpu
+    cudaMemcpy(knn_dist, d_knn_dist, query_nb * k * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(knn_index, d_knn_index, query_nb * k * sizeof(int), cudaMemcpyDeviceToHost);
+
+
+    cudaFree(d_ref);
+    cudaFree(d_query);
+    cudaFree(d_knn_dist);
+    cudaFree(d_knn_index);
 
     return true;
 }
