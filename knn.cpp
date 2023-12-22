@@ -292,10 +292,16 @@ int main(void) {
     // const int k        = 100;
 
     // Parameters 2
-    const int ref_nb   = 163840;
-    const int query_nb = 10240;
-    const int dim      = 8;
-    const int k        = 16;
+    // const int ref_nb   = 163840;
+    // const int query_nb = 40960;
+    // const int dim      = 128;
+    // const int k        = 16;
+
+    // Parameters 2 (40 times smaller)
+    // const int ref_nb   = 163840;
+    // const int query_nb = 1024;
+    // const int dim      = 128;
+    // const int k        = 16;
 
     // Parameters 3
     // const int ref_nb   = 16384;
@@ -391,7 +397,9 @@ int main(void) {
     // test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &ys_pick_kgpu_innerfor,  "innerfor", 20);
     // test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &your_solution_pick_k_on_gpu_w_stream,  "streams", 20);
     test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &ys_for_param2,  "p2_ready", 1);
-    
+
+    test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &ys_gpu_partial_sort,  "ps_gpu", 1);
+
     // ys_for_param2(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index);
     
 

@@ -61,3 +61,12 @@ bool ys_for_param2(const float * ref,
                      int           k,
                      float *       knn_dist,    // output fields
                      int *         knn_index);
+
+bool ys_gpu_partial_sort(const float * ref,
+                     int           ref_nb,
+                     const float * query,
+                     int           query_nb,
+                     int           dim,
+                     int           k,
+                     float *       knn_dist,    // output fields
+                     int *         knn_index);

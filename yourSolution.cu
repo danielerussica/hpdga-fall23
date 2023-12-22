@@ -753,18 +753,18 @@ bool ys_for_param2(const float * ref,
     cudaSetDevice(deviceId);
     cudaDeviceProp deviceProp;
     cudaGetDeviceProperties(&deviceProp, deviceId);
-    std::cout << "Total GPU Global Memory: " << deviceProp.totalGlobalMem / (1024 * 1024) << " MB\n";
+    // std::cout << "Total GPU Global Memory: " << deviceProp.totalGlobalMem / (1024 * 1024) << " MB\n";
 
     uint64_t o_matrix_size = 1L * ref_nb * query_nb * sizeof(float);
 
-    uint64_t batches = ceil((double)2*o_matrix_size/(deviceProp.totalGlobalMem));
-    std::cout << "batches = " << o_matrix_size << "/" << deviceProp.totalGlobalMem << " = " << batches << "\n";  
+    uint64_t batches = ceil((double) 2*o_matrix_size/(deviceProp.totalGlobalMem));
+    // std::cout << "batches = " << o_matrix_size << "/" << deviceProp.totalGlobalMem << " = " << batches << "\n";  
 
     int gridSize = ref_nb;      // Number of blocks for cdist
 
     for(unsigned int batch = 0; batch<batches; batch++){
         
-        printf("batch %d\n", batch);
+        // printf("batch %d\n", batch);
 
         float   *d_gpu_dist;
         int     *d_index;
@@ -782,9 +782,9 @@ bool ys_for_param2(const float * ref,
         int paddedDim = nextPow2/2;
         int smemSize = 3 * paddedDim * sizeof(float);
 
-        cdist3<<< gridSize, paddedDim, smemSize >>>(d_ref, ref_nb, d_query, query_nb/batches, dim, paddedDim, batch*(query_nb/batches),d_gpu_dist, d_index);
+        cdist3<<< gridSize, paddedDim, smemSize >>>(d_ref, ref_nb, d_query, query_nb/batches, batches, dim, paddedDim, batch*(query_nb/batches),d_gpu_dist, d_index);
 
-        printf("end cdist\n");
+        // printf("end cdist\n");
 
         // batch k selection ----------------------------------------------------------------------------------------------------------------------
         int blockSize2 = 1024;
@@ -796,7 +796,7 @@ bool ys_for_param2(const float * ref,
         }
 
         int interblockGridSize = nextPow2;
-        printf("paddedGridSize2: %d\n", interblockGridSize);
+        // printf("paddedGridSize2: %d\n", interblockGridSize);
 
         // allocate cuda mem
         float *d_min_distances;
@@ -814,12 +814,102 @@ bool ys_for_param2(const float * ref,
             }
         }
 
-        printf("end k selection\n");
+        // printf("end k selection\n");
 
         cudaFree(d_gpu_dist);
         cudaFree(d_index);
         cudaFree(d_min_distances);
         cudaFree(d_min_indexes);
+    }
+
+
+
+    // mem copy back to cpu
+    cudaMemcpy(knn_dist, d_knn_dist, query_nb * k * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(knn_index, d_knn_index, query_nb * k * sizeof(int), cudaMemcpyDeviceToHost);
+
+
+    cudaFree(d_ref);
+    cudaFree(d_query);
+    cudaFree(d_knn_dist);
+    cudaFree(d_knn_index);
+
+    return true;
+}
+
+
+bool ys_gpu_partial_sort(const float * ref,
+                     int           ref_nb,
+                     const float * query,
+                     int           query_nb,
+                     int           dim,
+                     int           k,
+                     float *       knn_dist,    // output fields
+                     int *         knn_index) {
+
+    // ds that must be allocated
+    float   *d_ref, *d_query;
+
+    cudaMalloc(&d_ref, ref_nb * dim * sizeof(float));
+    cudaMalloc(&d_query, query_nb * dim * sizeof(float));
+
+    cudaMemcpy(  d_ref,   ref, ref_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_query, query, query_nb * dim * sizeof(float), cudaMemcpyHostToDevice);
+
+    float *d_knn_dist;
+    int *d_knn_index;
+
+    cudaMalloc(&d_knn_dist, query_nb * k * sizeof(float));
+    cudaMalloc(&d_knn_index, query_nb * k * sizeof(int));
+
+    // Get device properties
+    int deviceId = 0;
+    cudaSetDevice(deviceId);
+    cudaDeviceProp deviceProp;
+    cudaGetDeviceProperties(&deviceProp, deviceId);
+    // std::cout << "Total GPU Global Memory: " << deviceProp.totalGlobalMem / (1024 * 1024) << " MB\n";
+
+    uint64_t o_matrix_size = 1L * ref_nb * query_nb * sizeof(float);
+
+    uint64_t batches = ceil((double) 2*o_matrix_size/(deviceProp.totalGlobalMem));
+    // std::cout << "batches = " << o_matrix_size << "/" << deviceProp.totalGlobalMem << " = " << batches << "\n";  
+
+    int gridSize = ref_nb;      // Number of blocks for cdist
+
+    for(unsigned int batch = 0; batch<batches; batch++){
+        
+        // printf("batch %d\n", batch);
+
+        float   *d_gpu_dist;
+        int     *d_index;
+
+        cudaMalloc(&d_gpu_dist, o_matrix_size/batches);
+        cudaMalloc(&d_index, o_matrix_size/batches);
+
+        // Calculate the next power of 2 for dim
+        int nextPow2 = 1;
+        while (nextPow2 < dim) {
+            nextPow2 <<= 1;
+        }
+
+        // Calculate the number of elements required in smem with padding
+        int paddedDim = nextPow2/2;
+        int smemSize = 3 * paddedDim * sizeof(float);
+
+        cdist3<<< gridSize, paddedDim, smemSize >>>(d_ref, ref_nb, d_query, query_nb/batches, batches, dim, paddedDim, batch*(query_nb/batches), d_gpu_dist, d_index);
+
+        // printf("end cdist\n");
+
+        // batch k selection ----------------------------------------------------------------------------------------------------------------------
+        int blockSize2 = 1024;
+        int gridSize2 = query_nb/blockSize2;
+
+        gpu_custom_insertion_sort<<< gridSize2, blockSize2>>>(d_gpu_dist, d_index, ref_nb, k, query_nb/batches, 0, d_knn_dist, d_knn_index);
+
+        // printf("end k selection\n");
+
+        cudaFree(d_gpu_dist);
+        cudaFree(d_index);
     }
 
 

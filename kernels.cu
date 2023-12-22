@@ -116,6 +116,7 @@ __global__ void cdist3(const float   * ref,
                         int           ref_nb,
                         const float * query,
                         int           query_nb,
+                        int           batches,
                         int           dim,
                         int           paddedDim,
                         int           offset,
@@ -130,15 +131,15 @@ __global__ void cdist3(const float   * ref,
 
     for(unsigned int query_index=0; query_index<query_nb; query_index++){
         // initialize smem, if tid < dim, copy data, else copy 0
-        smem[tid]               = (tid < dim) ? ((ref[(tid*ref_nb)+blockIdx.x]) * (query[(tid*query_nb)+query_index+offset]))      : 0;
+        smem[tid]               = (tid < dim) ? ((ref[(tid*ref_nb)+blockIdx.x]) * (query[(tid*query_nb*batches)+query_index+offset]))      : 0;
         smem[tid+paddedDim]     = (tid < dim) ? ((ref[(tid*ref_nb)+blockIdx.x]) * (ref[(tid*ref_nb)+blockIdx.x]))           : 0;
-        smem[tid+(2*paddedDim)] = (tid < dim) ? ((query[(tid*query_nb)+query_index+offset]) * (query[(tid*query_nb)+query_index+offset])) : 0;
+        smem[tid+(2*paddedDim)] = (tid < dim) ? ((query[(tid*query_nb*batches)+query_index+offset]) * (query[(tid*query_nb*batches)+query_index+offset])) : 0;
 
         // perform first reduction step when copying data
         if (tid + blockDim.x < dim){
-            smem[tid]               += ((ref[((tid+blockDim.x)*ref_nb)+blockIdx.x]) * (query[((tid+blockDim.x)*query_nb)+query_index+offset]));
+            smem[tid]               += ((ref[((tid+blockDim.x)*ref_nb)+blockIdx.x]) * (query[((tid+blockDim.x)*query_nb*batches)+query_index+offset]));
             smem[tid+paddedDim]     += ((ref[((tid+blockDim.x)*ref_nb)+blockIdx.x]) * (ref[((tid+blockDim.x)*ref_nb)+blockIdx.x]));
-            smem[tid+(2*paddedDim)] += ((query[((tid+blockDim.x)*query_nb)+query_index+offset]) * (query[((tid+blockDim.x)*query_nb)+query_index+offset]));
+            smem[tid+(2*paddedDim)] += ((query[((tid+blockDim.x)*query_nb*batches)+query_index+offset]) * (query[((tid+blockDim.x)*query_nb*batches)+query_index+offset]));
         }
 
         __syncthreads();
@@ -201,7 +202,7 @@ __global__ void get_min_intrablock3(const float* gpu_dist,
 
     if (threadIdx.x == 0){
         // if(smem[0]==0) printf("STORED ZERO! smem[%d]: %f\n", blockIdx.x, smem[0]);
-        min_candidates[(blockIdx.x*query_nb)+query_index+offset] = smem[0];
+              min_candidates[(blockIdx.x*query_nb)+query_index+offset] = smem[0];
         min_index_candidates[(blockIdx.x*query_nb)+query_index+offset] = smem[blockDim.x];
     }  
 
@@ -482,4 +483,44 @@ void  insertion_sort_on_matrix(float *dist, int *index, int length, int k, int q
     }
 }
 
+// The idea is to use a custom insertion sort that will only sort the k first elements on gpu where each thread will sort a query
+// Since we have more than 1024 queries, we need to use several blocks to handle all queries
 
+__global__ void gpu_custom_insertion_sort(float *dist, int *index, int length, int k, int query_nb, int offset, float *knn_dist, int *knn_index){
+    
+    int tid = (blockIdx.x * blockDim.x) + threadIdx.x;
+
+    // Initialize the first index
+    index[tid] = 0;
+
+    // Go through all points
+    for (int i = 1; i < length; ++i) {
+
+        // Store current distance and associated index
+        float curr_dist = dist[(i * query_nb) + tid];
+        int curr_index = i;
+
+        // Skip the current value if its index is >= k and if it's higher than the k-th already sorted smallest value
+        if (i >= k && curr_dist >= dist[(k - 1) * query_nb + tid]) {
+            continue;
+        }
+
+        // Shift values (and indexes) higher than the current distance to the right
+        int j = min(i, k - 1);
+        while (j > 0 && dist[(j - 1) * query_nb + tid] > curr_dist) {
+            dist[(j * query_nb) + tid] = dist[((j - 1) * query_nb) + tid];
+            index[(j * query_nb) + tid] = index[((j - 1) * query_nb) + tid];
+            --j;
+        }
+
+        // Write the current distance and index at their position
+        dist[(j * query_nb) + tid] = curr_dist;
+        index[(j * query_nb) + tid] = curr_index;
+    }
+
+    // Copy the k smallest distances and associated index to the knn_dist and knn_index arrays
+    for (int i = 0; i < k; i++) {
+        knn_dist[(query_nb * i) + tid + offset] = dist[(i * query_nb) + tid];
+        knn_index[(query_nb * i) + tid + offset] = index[(i * query_nb) + tid];
+    }
+}
