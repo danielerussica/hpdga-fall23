@@ -313,6 +313,102 @@ __global__ void get_min_interblock5(const float * min_candidates,
     }
 }
 
+// -- USED FOR PICK_K ON GPU --
+/*
+    * Find min using reduction, then set corresponding value to 1 in gpu_dist and repeat k times
+    * Handles distances and indexes
+    * Handles offset for streams
+*/
+__global__ void get_min_intrablock6(const float* gpu_dist,
+                                    const int  * gpu_index,
+                                    int          offset,
+                                    int          query_nb,
+                                    float      * min_candidates,
+                                    int        * min_index_candidates){
+
+    // set up shared mem
+    // 2 * blockDim * sizeof(float) for distances and indexes
+    extern __shared__ float smem[];
+    
+    for(unsigned int query_index=0; query_index<query_nb; query_index++){
+        // copy distances and indexes to shared mem
+        smem[threadIdx.x]            =  gpu_dist[(query_nb*blockDim.x*blockIdx.x)+(threadIdx.x*query_nb) + offset + query_index];
+        smem[threadIdx.x+blockDim.x] = gpu_index[(query_nb*blockDim.x*blockIdx.x)+(threadIdx.x*query_nb) + offset + query_index];
+
+        __syncthreads();
+
+        // find min
+        for(unsigned int s=blockDim.x/2; s>0; s>>=1){
+            if(threadIdx.x < s){
+                if(smem[threadIdx.x] > smem[threadIdx.x + s]){
+                    smem[threadIdx.x] = smem[threadIdx.x + s];
+                    smem[threadIdx.x+blockDim.x] = smem[threadIdx.x + s + blockDim.x];
+                }
+            }
+            __syncthreads();
+        }
+
+        if (threadIdx.x == 0){
+            // if(smem[0]==0) printf("STORED ZERO! smem[%d]: %f\n", blockIdx.x, smem[0]);
+                min_candidates[(blockIdx.x*query_nb)+query_index+offset] = smem[0];
+            min_index_candidates[(blockIdx.x*query_nb)+query_index+offset] = smem[blockDim.x];
+        }
+    }
+
+}
+
+__global__ void get_min_interblock6(const float * min_candidates,
+                                    const int   * min_index_candidates,
+                                    int           size,
+                                    float       * gpu_dist,
+                                    int           query_nb,
+                                    int           offset,
+                                    int           batches,
+                                    int           i,              // #ith min
+                                    int           k,
+                                    float       * knn_dist,
+                                    int         * knn_index){
+
+    // set up shared mem
+    extern __shared__ float smem[];
+    
+    for(unsigned int query_index=0; query_index<query_nb; query_index++){
+        // copy distances and indexes to shared mem
+        smem[threadIdx.x]            = (threadIdx.x < size) ?       min_candidates[(threadIdx.x*query_nb)+query_index] : 1;
+        smem[threadIdx.x+blockDim.x] = (threadIdx.x < size) ? min_index_candidates[(threadIdx.x*query_nb)+query_index] : 1;
+
+        // printf("smem[%d]: %f\n", threadIdx.x, smem[threadIdx.x]);
+
+        // if(smem[threadIdx.x] == 0) printf("LOADED ZERO! smem[%d]: %f\n", threadIdx.x, smem[threadIdx.x]);
+        __syncthreads();
+
+        // find min
+        for(unsigned int s=blockDim.x/2; s>0; s>>=1){
+            if(threadIdx.x < s){
+                if(smem[threadIdx.x] > smem[threadIdx.x + s]){
+                    smem[threadIdx.x] = smem[threadIdx.x + s];
+                    smem[threadIdx.x+blockDim.x] = smem[threadIdx.x + s + blockDim.x];
+                }
+            }
+            __syncthreads();
+        }
+
+        // write result for this block to global memory
+        if (threadIdx.x == 0){
+            int min_index = smem[blockDim.x];
+
+            knn_dist[(query_nb*batches*i)+query_index+offset] = smem[0];
+            knn_index[(query_nb*batches*i)+query_index+offset] = min_index;
+
+            // printf("placing %f at index: %d\n", smem[0], (k*query_index)+i);
+
+            // set gpu_dist["min_index"] to 1
+            gpu_dist[(min_index*query_nb)+query_index] = 1;
+
+        }
+    }
+}
+
 
 // -- USED FOR PICK_K ON GPU W INNER LOOP--
 /*

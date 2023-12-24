@@ -201,39 +201,6 @@ bool test(const float * ref,
     struct timeval toc;
     gettimeofday(&toc, NULL);
 
-    // //fprintf knn_dist and knn_index to file
-    FILE *f = fopen("knn_dist.txt", "w");
-    if (f == NULL)
-    {
-        printf("Error opening file!\n");
-        exit(1);
-    }
-
-    for(unsigned int i=0; i<query_nb; i++){
-        for(unsigned int j=0; j<k; j++){
-            fprintf(f, "%f ", test_knn_dist[(query_nb*j)+i]);
-        }
-        fprintf(f, "\n");
-    }
-
-    fclose(f);
-
-    f = fopen("knn_index.txt", "w");
-    if (f == NULL)
-    {
-        printf("Error opening file!\n");
-        exit(1);
-    }
-
-    for(unsigned int i=0; i<query_nb; i++){
-        for(unsigned int j=0; j<k; j++){
-            fprintf(f, "%d ", test_knn_index[(query_nb*j)+i]);
-        }
-        fprintf(f, "\n");
-    }
-
-    fclose(f);
-
     // Elapsed time in ms
     double elapsed_time = toc.tv_sec - tic.tv_sec;
     elapsed_time += (toc.tv_usec - tic.tv_usec) / 1000000.;
@@ -280,10 +247,10 @@ bool test(const float * ref,
  */
 int main(void) {
     // Parameters 0 (to develop your solution)
-    // const int ref_nb   = 4096;
-    // const int query_nb = 1024;
-    // const int dim      = 64;
-    // const int k        = 16;
+    const int ref_nb   = 4096;
+    const int query_nb = 1024;
+    const int dim      = 64;
+    const int k        = 16;
 
     // Parameters 1
     // const int ref_nb   = 16384;
@@ -308,6 +275,7 @@ int main(void) {
     // const int query_nb = 4096;
     // const int dim      = 1280;
     // const int k        = 16;
+    
 
     // Display
     printf("PARAMETERS\n");
@@ -355,53 +323,8 @@ int main(void) {
     // Test all k-NN functions
     printf("TESTS\n");
     test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &knn_c,            "knn_c",              1);
-
-    // //fprintf knn_dist and knn_index to file
-    FILE *f = fopen("gt_knn_dist.txt", "w");
-    if (f == NULL)
-    {
-        printf("Error opening file!\n");
-        exit(1);
-    }
-
-    for(unsigned int i=0; i<query_nb; i++){
-        for(unsigned int j=0; j<k; j++){
-            fprintf(f, "%f ", knn_dist[(query_nb*j)+i]);
-        }
-        fprintf(f, "\n");
-    }
-
-    fclose(f);
-
-    f = fopen("gt_knn_index.txt", "w");
-    if (f == NULL)
-    {
-        printf("Error opening file!\n");
-        exit(1);
-    }
-
-    for(unsigned int i=0; i<query_nb; i++){
-        for(unsigned int j=0; j<k; j++){
-            fprintf(f, "%d ", knn_index[(query_nb*j)+i]);
-        }
-        fprintf(f, "\n");
-    }
-
-    fclose(f);
-
-
-
-    // test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &your_solution_baseline,  "baseline",         10);
-    // test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &your_solution_only_dist,  "onlydist", 20);
-    // test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &your_solution_pick_k_on_gpu,  "pick_k", 20);
-    // test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &ys_pick_kgpu_innerfor,  "innerfor", 20);
-    // test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &your_solution_pick_k_on_gpu_w_stream,  "streams", 20);
-    test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &ys_for_param2,  "p2_ready", 1);
-
-    test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &ys_gpu_partial_sort,  "ps_gpu", 1);
-
-    // ys_for_param2(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index);
-    
+    test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &ys_selection_approach,  "p2_ready", 10);
+    test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &ys_gpu_partial_sort,  "ps_gpu", 10);
 
 
     // Deallocate memory 
