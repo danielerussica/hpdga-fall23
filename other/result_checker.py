@@ -5,16 +5,16 @@ import sys
 import matplotlib.pyplot as plt
 
 # gt results
-with open('hpdga-fall23/gt_dist.txt') as f:
+with open('gt_dist.txt') as f:
     gt_dist = [[float(x) for x in line.split()] for line in f]
 
-with open('hpdga-fall23/gt_index.txt') as f:
+with open('gt_index.txt') as f:
     gt_index = [[int(x) for x in line.split()] for line in f]
 
-with open('hpdga-fall23/distances.txt') as f:
+with open('knn_dist.txt') as f:
     gpu_dist = [[float(x) for x in line.split()] for line in f]
 
-with open('hpdga-fall23/indexes.txt') as f:
+with open('knn_index.txt') as f:
     gpu_index = [[int(x) for x in line.split()] for line in f]
 
 
