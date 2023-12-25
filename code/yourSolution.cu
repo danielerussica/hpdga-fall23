@@ -345,7 +345,7 @@ __global__ void gpu_custom_insertion_sort(float *dist, int *index, int length, i
 }
 
 // PROPOSED SOLUTION 1
-bool ys_selection_approach(const float * ref,
+bool your_solution(const float * ref,
                      int           ref_nb,
                      const float * query,
                      int           query_nb,
@@ -456,7 +456,7 @@ bool ys_selection_approach(const float * ref,
 }
 
 // PROPOSED SOLUTION 2 (better version)
-bool ys_gpu_partial_sort(const float * ref,
+bool your_solution2(const float * ref,
                      int           ref_nb,
                      const float * query,
                      int           query_nb,

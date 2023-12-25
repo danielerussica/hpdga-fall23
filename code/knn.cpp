@@ -317,8 +317,8 @@ int main(void) {
     // Test all k-NN functions
     printf("TESTS\n");
     test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &knn_c,            "knn_c",              1);
-    test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &ys_selection_approach,  "selection approach", 10);
-    test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &ys_gpu_partial_sort,  "partial sorting approach", 10);
+    test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &your_solution,  "selection approach", 10);
+    test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &your_solution2,  "partial sorting approach", 10);
 
 
     // Deallocate memory 
