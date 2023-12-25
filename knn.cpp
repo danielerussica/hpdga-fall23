@@ -212,7 +212,7 @@ bool test(const float * ref,
         if (fabs(test_knn_dist[i] - gt_knn_dist[i]) <= precision) {
             nb_correct_precisions++;
         }
-        else printf("test_knn_dist[%d] = %f, gt_knn_dist[%d] = %f\n", i, test_knn_dist[i], i, gt_knn_dist[i]);
+        // else printf("test_knn_dist[%d] = %f, gt_knn_dist[%d] = %f\n", i, test_knn_dist[i], i, gt_knn_dist[i]);
         if (test_knn_index[i] == gt_knn_index[i]) {
             nb_correct_indexes++;
         }
@@ -222,7 +222,7 @@ bool test(const float * ref,
     float precision_accuracy = nb_correct_precisions / ((float) query_nb * k);
     float index_accuracy     = nb_correct_indexes    / ((float) query_nb * k);
 
-    printf("precision = %5.3f, index = %5.3f, time = %8.5f s", precision_accuracy, index_accuracy, elapsed_time / nb_iterations);
+    // printf("precision = %5.3f, index = %5.3f, time = %8.5f s", precision_accuracy, index_accuracy, elapsed_time / nb_iterations);
 
     // Display report
     if (precision_accuracy >= min_accuracy && index_accuracy >= min_accuracy ) {
@@ -261,12 +261,6 @@ int main(void) {
     // Parameters 2
     // const int ref_nb   = 163840;
     // const int query_nb = 40960;
-    // const int dim      = 128;
-    // const int k        = 16;
-
-    // Parameters 2 (40 times smaller)
-    // const int ref_nb   = 163840;
-    // const int query_nb = 1024;
     // const int dim      = 128;
     // const int k        = 16;
 
@@ -323,8 +317,8 @@ int main(void) {
     // Test all k-NN functions
     printf("TESTS\n");
     test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &knn_c,            "knn_c",              1);
-    test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &ys_selection_approach,  "p2_ready", 10);
-    test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &ys_gpu_partial_sort,  "ps_gpu", 10);
+    test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &ys_selection_approach,  "selection approach", 10);
+    test(ref, ref_nb, query, query_nb, dim, k, knn_dist, knn_index, &ys_gpu_partial_sort,  "partial sorting approach", 10);
 
 
     // Deallocate memory 
