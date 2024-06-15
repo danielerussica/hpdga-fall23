@@ -23,7 +23,7 @@ GPU-accelerated Exact K-Nearest Neighobor with Cosine as distance metric
 ## Deadlines:
 
 - **17.11.2023 @23:59 Milan**
-    - Subscribe to the contest by sending an email to: ian.didio@polimi.it with your name and possibily your teammate. 
+    - Subscribe to the contest by sending an email to: with your name and possibily your teammate. 
     - Object: [hpdga-fall23] subscription fullname1 - fullname2
     - Group of max 2 people (you can do it alone if you wish)
     - If you want to be assinged a teammate just drop me an email and we will se if someone has expressed the same desire. 
